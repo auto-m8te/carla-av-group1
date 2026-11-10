@@ -37,6 +37,9 @@ from avoidance.collision_avoidance import AvoidanceConfig, CollisionAvoidance, M
 from perception.camera_sensor import CameraLaneModule
 from perception.lidar_sensor import LidarMount, LidarObstacleDetector
 
+from scenarios.hud_colors import HUD_COLORS
+from scenarios.video_recorder import VideoRecorder
+
 log = logging.getLogger("scenarios")
 
 SCENARIOS = ("empty_lane", "obstacle_stop", "obstacle_avoid")
@@ -99,6 +102,7 @@ class RunParams:
     lane_source: str = "groundtruth"
     lane_debug: Optional[str] = None
     lidar_debug: bool = False
+    record_video: Optional[str] = None
     lidar_noise: float = 0.0   # LiDAR range noise std-dev in metres (robustness test)
 
 
@@ -363,17 +367,7 @@ def follow_camera(world: carla.World, ego: carla.Actor) -> None:
     ))
 
 
-HUD_COLORS = {
-    Mode.CRUISE: (0, 200, 0),
-    Mode.FOLLOW: (220, 200, 0),
-    Mode.BRAKE: (255, 140, 0),
-    Mode.STOPPED: (220, 0, 0),
-    Mode.EMERGENCY_STOP: (255, 0, 255),
-    Mode.ABORT: (255, 170, 0),
-    Mode.AVOID: (0, 120, 255),
-    Mode.PASSING: (0, 120, 255),
-    Mode.RETURN: (0, 220, 220),
-}
+
 
 
 def draw_hud(world: carla.World, ego: carla.Actor, mode: Mode, speed: float,
@@ -407,7 +401,8 @@ def lane_log_values(camera: Optional[CameraLaneModule], gt_steer: float) -> dict
 def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                   gt_fn: ObstacleFn, detector: Optional[LidarObstacleDetector] = None,
                   other: Optional[ScriptedDriver] = None,
-                  camera: Optional[CameraLaneModule] = None) -> None:
+                  camera: Optional[CameraLaneModule] = None,
+                  recorder: Optional[VideoRecorder] = None) -> None:
     gt_lane_fn = waypoint_lane_steer(world)
     partial = out.with_suffix(".partial")  # renamed only when the run ends normally
     with partial.open("w", newline="") as fh:
@@ -443,6 +438,11 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                        {"other_speed": "", "other_gap": ""})
             row.update(lane_log_values(camera, gt_lane_fn(ego)))
             writer.writerow(row)
+            if recorder is not None:
+                recorder.add_frame(cmd.mode, p.speed, p.obstacle_distance, {
+                    "scenario": params.scenario, "town": params.town, "run": params.run,
+                    "lane_source": params.lane_source, "obstacle_source": params.obstacle_source,
+                })
             stopped_for = stopped_for + FIXED_DT if cmd.mode == Mode.STOPPED else 0.0
             if is_finished(params.scenario, row, stopped_for, p.distance_travelled - params.obstacle_m):
                 break
@@ -538,7 +538,18 @@ def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceC
         actor = actors[2] if oncoming else actors[1]
         target = rng.uniform(6.0, 8.0) if oncoming else params.target_speed * rng.uniform(0.4, 0.6)
         other = ScriptedDriver(world, actor, params.scenario, target)
-    drive_and_log(world, ego, bridge, CollisionAvoidance(cfg), params, out, collided, gt_fn, detector, other, camera)
+    recorder = None
+    try:
+        if params.record_video:
+            path = Path(params.record_video) / f"{params.town}_{params.scenario}_run{params.run}.mp4"
+            recorder = VideoRecorder(world, ego, path, fps=round(1 / FIXED_DT))
+            actors.append(recorder.sensor)
+            world.tick()  # first chase-camera measurement before recording
+        drive_and_log(world, ego, bridge, CollisionAvoidance(cfg), params, out, collided,
+                      gt_fn, detector, other, camera, recorder)
+    finally:
+        if recorder is not None:
+            recorder.close()
     return collided["hit"]
 
 
@@ -586,6 +597,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--out", default="results")
     ap.add_argument("--resume", action="store_true", help="skip runs whose CSV already exists")
     ap.add_argument("--realtime", action="store_true", help="run at real speed (for recording a demo video)")
+    ap.add_argument("--record-video", metavar="DIR", help="save chase-camera MP4s with a video HUD")
     ap.add_argument("--hud", action="store_true", help="show controller mode, speed and obstacle gap above the car")
     ap.add_argument("--obstacle", choices=PERCEPTION_SOURCES, default="groundtruth",
                     help="obstacle_distance source: CARLA ground truth or Abir's LiDAR module")
@@ -624,7 +636,7 @@ def main() -> None:
                     obstacle_m=round(rng.uniform(*( (30.0, 40.0) if scenario in
                         ("lead_vehicle", "lead_brake") else OBSTACLE_RANGE_M)), 1),
                     target_speed=round(rng.uniform(*TARGET_SPEED_RANGE), 2),
-                    lane_source=args.lane, lane_debug=args.lane_debug,
+                    lane_source=args.lane, lane_debug=args.lane_debug, record_video=args.record_video,
                     lidar_debug=args.lidar_debug, lidar_noise=args.lidar_noise, realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle, adjacent_source=args.adjacent,
                 )
                 if args.resume and (out_dir / f"{scenario}_run{i}.csv").exists():

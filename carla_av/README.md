@@ -232,3 +232,26 @@ saves an overlay every 20 calls in town/run subdirectories. CSVs append
 (the waypoint steering each tick). Ground-truth runs leave camera fields blank.
 Analysis includes mean camera confidence and lost-lane ticks in `per_run.csv`
 and the perception table when camera confidence is available.
+
+## Recording a demo video
+
+With a CARLA 0.9.16 server already running, record chase-camera MP4s directly
+from simulation ticks (no screen capture or GUI required):
+
+```powershell
+.venv/Scripts/python.exe -m scenarios.run_scenarios --towns Town03 --scenario all --runs 1 --record-video videos
+```
+
+Each run produces `videos/<town>_<scenario>_run<N>.mp4` at 1280×720 and
+20 fps, including a two-second scenario title card and a HUD showing the
+controller mode, speed, obstacle gap, and perception sources. `--record-video`
+works independently of `--hud`; `--realtime` is optional because video timing
+uses simulation time. Existing CSV output and `--resume` behavior still apply.
+
+Join selected clips in the given order with one-second black separators:
+
+```powershell
+.venv/Scripts/python.exe -m tools.make_demo_reel --inputs videos/Town03_empty_lane_run1.mp4 videos/Town03_obstacle_stop_run1.mp4 videos/Town03_obstacle_avoid_run1.mp4 --out videos/demo_reel.mp4
+```
+
+All reel inputs must have the same dimensions and frame rate.

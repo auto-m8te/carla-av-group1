@@ -1,6 +1,6 @@
 # Report sections — Omar (draft)
 
-> Section V uses real CARLA results (carla_av/results/: 90 runs, 6 towns).
+> Section V separates original Run A, final Run B, camera Run C and the noise test.
 > The remaining [[...]] placeholders are teammates' parts.
 
 ---
@@ -45,60 +45,19 @@ Section VI concludes.
 
 ### A. Test setup
 
-All experiments were run in CARLA 0.9.16 [3] in synchronous mode with a fixed time step
-of 0.05 s (20 Hz), on a desktop PC with an NVIDIA RTX 3060 GPU. To check that the system
-is not tuned to a single map, every scenario was run in six CARLA towns: Town01, Town02,
-Town03, Town04, Town05 and Town10HD. These cover small single-lane towns, an urban grid
-with curves, a multi-lane highway, and a dense downtown map.
+All experiments used CARLA 0.9.16 [3] in synchronous mode with a 0.05 s tick (20 Hz). The evaluations are separate datasets, not repeated measurements of the same final code.
 
-Each scenario was repeated five times per town (6 towns × 3 scenarios × 5 runs = **90 runs**).
-Every run was randomised with a fixed seed, so the results can be reproduced exactly:
+Run A is the original 90-run evaluation with ground-truth obstacle and adjacent-lane perception and map-waypoint steering: three core scenarios, six towns and five seeds per combination. Its original tables are retained below. Starts had at most 25° heading change, obstacle distances were 35–55 m and cruise speeds 6–10 m/s.
 
-- **Start location**: chosen at random from road stretches with an adjacent driving lane,
-  no junction, and at most 25° of heading change (mild curves are allowed).
-- **Obstacle distance**: 35–55 m ahead of the start point.
-- **Cruise speed**: 6–10 m/s (≈ 22–36 km/h, typical urban speeds).
-- **Lane width**: read from the map for each run (4.0 m on Town01/02, 3.5 m elsewhere).
+Run B (FINAL) contains 200 runs using LiDAR obstacle and adjacent-lane detection with map-waypoint steering. Eight scenarios were tested across Town01, Town02_Opt, Town03_Opt, Town04, Town05_Opt and Town10HD. Coverage is uneven: core scenarios have 30 runs each, curves 20 each, lead scenarios 25 each and oncoming overtakes 20. A dash in the town table means untested, not failure. Town02/03/05 use layered _Opt maps because standard-map renderer crashes prevented reliable execution on this machine.
 
-| Scenario | Setup | Expected behaviour |
-|---|---|---|
-| S1 Empty lane | No obstacles, drive 100 m | Follow the lane, no braking |
-| S2 Obstacle-stop | Parked car ahead, adjacent lane blocked by a second parked car | Brake and stop with a gap of at least 2 m |
-| S3 Obstacle-avoid | Parked car ahead, adjacent lane free | Change lane, pass, return to the original lane |
-
-On Town01, Town02 and Town10HD the chosen roads have only one lane per direction, so the
-vehicle overtook through the (empty) oncoming lane. This applied to 15 of the 30 S3 runs.
-On the other towns it used a second lane in the same direction.
-
-Every tick was logged to CSV (speed, controller mode, obstacle distance, lateral offset
-from the original lane centre, and control commands). A collision sensor on the ego
-vehicle recorded any contact.
-
-**Perception sources.** The experiment was run twice with the same 90 seeds:
-
-- **Run A (ground truth):** obstacle distance and "is the adjacent lane free" are computed
-  geometrically from actor positions. This isolates the decision and control logic.
-- **Run B (LiDAR):** both values come from the team's LiDAR obstacle module (a 32-channel
-  roof LiDAR, one full sweep per tick; see Section III). Ground truth is still logged next to
-  the LiDAR output each tick, so detection errors can be measured.
-
-In both runs lane steering is pure pursuit on map waypoints. [[Rerun with Adil's OpenCV
-lane module once integrated.]] In Run B, Town02 and Town03 were loaded as their layered
-`_Opt` variants (same OpenDRIVE road network, same seeds), because the standard versions
-crashed CARLA's renderer on our machine ("Shader compilation failures are Fatal").
+Run C uses camera lane steering plus LiDAR on Town04, Town03_Opt and Town01: three core scenarios, two runs per combination (18 runs). A separate noise test adds 0.05 m LiDAR range noise on Town04 over 15 core-scenario runs. Neither is a repeat of the full Run B matrix. Sensor reads are synchronised to the simulation frame.
 
 ### B. Metrics
 
-- **Success rate**: the share of runs that met the expected behaviour with no collision.
-  - S1: the vehicle never left the lane (|offset| < 1.0 m).
-  - S2: the vehicle stopped with at least a 2 m gap.
-  - S3: the vehicle completed AVOID → PASSING → RETURN and ended within 0.5 m of the
-    original lane centre.
-- **Lane-keeping error**: RMS and maximum lateral offset from the lane centre while in
-  CRUISE mode.
-- **Reaction distance / time**: the distance to the obstacle when the controller first
-  left CRUISE, and the time between first detection and that reaction.
-- **Minimum gap**: the closest bumper-to-bumper distance to the obstacle in the path.
+Success requires no collision. Empty-lane and curve-lane runs require CRUISE lateral offset below 1.0 m. Stop, curve-stop and lead-brake runs require final speed below 0.2 m/s and minimum gap ≥2 m. Lead-vehicle runs finish after 120 m and require minimum gap ≥2 m. Avoidance requires AVOID → PASSING → RETURN and final offset below 0.5 m. Oncoming success additionally requires never more than half a lane of displacement while the other car approaches (identified by a shrinking logged gap). A safe aborted attempt alone does not count as completed avoidance.
+
+Lane RMS and maximum error use CRUISE ticks only; they do not measure tracking throughout FOLLOW or a lane change. Reaction distance is the gap at the first qualifying departure from CRUISE; reaction time is measured from first detection, not sensor processing latency. Minimum gap is the nearest reported in-path bumper gap. Table I retains mean (min–max); Table III reports scenario means, including the mean of each run's maximum lane error. Ground truth is logged for detection-error comparison.
 
 ### C. Results
 
@@ -121,65 +80,80 @@ crashed CARLA's renderer on our machine ("Shader compilation failures are Fatal"
 | Town05 | 5/5 | 5/5 | 5/5 | 0 |
 | Town10HD | 5/5 | 5/5 | 5/5 | 0 |
 
-**Table III – Run B: LiDAR perception (same 90 seeds)**
 
-| Scenario | Runs | Success rate | Collisions | Reaction dist (m) | Min gap (m) | LiDAR distance error (MAE, m) |
+Run B completed 194/200 runs with zero collisions. Six runs failed completion criteria; zero collisions does not mean every task completed.
+
+**Table III(a) – Run B per scenario (means; lane maxima averaged across runs)**
+
+| Scenario | Success | Coll. | RMS m | Max m | React. m | React. s | Gap m |
+|---|---|---|---|---|---|---|---|
+| empty_lane | 30/30 | 0 | 0.03 | 0.11 | - | - | - |
+| obstacle_stop | 30/30 | 0 | 0.03 | 0.05 | 11.09 | 6.37 | 6.99 |
+| obstacle_avoid | 30/30 | 0 | 0.04 | 0.30 | 26.65 | 3.68 | 13.56 |
+| curve_lane | 20/20 | 0 | 0.17 | 0.27 | - | - | - |
+| curve_stop | 20/20 | 0 | 0.14 | 0.24 | 11.52 | 6.12 | 7.44 |
+| lead_vehicle | 25/25 | 0 | 0.00 | 0.01 | 28.58 | 1.40 | 9.62 |
+| lead_brake | 21/25 | 0 | 0.00 | 0.01 | 28.87 | 1.40 | 6.01 |
+| oncoming_overtake | 18/20 | 0 | 0.20 | 0.50 | 20.96 | 5.17 | 6.36 |
+
+**Table III(b) – Run B per town**
+
+| Town | EL | OS | OA | CL | CS | LV | LB | OO | Coll. |
+|---|---|---|---|---|---|---|---|---|---|
+| Town01 | 5/5 | 5/5 | 5/5 | - | - | 5/5 | 3/5 | 5/5 | 0 |
+| Town02_Opt | 5/5 | 5/5 | 5/5 | - | - | 5/5 | 4/5 | 3/5 | 0 |
+| Town03_Opt | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 0 |
+| Town04 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | - | 0 |
+| Town05_Opt | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | 4/5 | - | 0 |
+| Town10HD | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 | - | - | 5/5 | 0 |
+
+EL = empty_lane; OS = obstacle_stop; OA = obstacle_avoid; CL = curve_lane; CS = curve_stop; LV = lead_vehicle; LB = lead_brake; OO = oncoming_overtake.
+
+**Table IV – Run C: camera steering plus LiDAR, success per town**
+
+| Town | empty_lane | obstacle_stop | obstacle_avoid | Collisions |
+|---|---|---|---|---|
+| Town01 | 2/2 | 2/2 | 2/2 | 0 |
+| Town03_Opt | 1/2 | 2/2 | 2/2 | 1 |
+| Town04 | 2/2 | 2/2 | 2/2 | 0 |
+
+Run C succeeded in 17/18 runs, with one collision: Town03_Opt empty_lane run 1 drifted off the road. Both obstacle scenarios succeeded in 6/6 runs; empty_lane succeeded in 5/6.
+
+**Table V – Offline camera lane detector, held-out drive 2**
+
+| Town | N | Detection | Offset MAE m | Heading MAE ° | Offset sign | Steering sign |
 |---|---|---|---|---|---|---|
-| S1 empty_lane | 30 | 30/30 (100%) | 0 | – | – | – |
-| S2 obstacle_stop | 30 | 30/30 (100%) | 0 | 11.05 (9.51–12.53) | 7.02 (5.41–10.32) | 0.48 (0.21–1.97) |
-| S3 obstacle_avoid | 30 | 30/30 (100%) | 0 | 26.85 (23.95–33.18) | 13.78 (10.19–19.19) | 0.44 (0.27–1.76) |
+| Town01 | 93 | 92.5% | 0.350 | 123.73 | 34.5% | 38.2% |
+| Town02_Opt | 93 | 88.2% | 0.190 | 2.56 | 75.0% | 81.7% |
+| Town03_Opt | 93 | 95.7% | 0.138 | 2.63 | 91.1% | 83.9% |
+| Town04 | 93 | 90.3% | 0.251 | 4.36 | 81.2% | 97.1% |
+| Town05_Opt | 93 | 90.3% | 0.147 | 0.84 | 81.8% | 80.3% |
+| Town10HD | 93 | 90.3% | 0.517 | 9.50 | 36.5% | 52.4% |
+| Overall | 558 | 91.2% | 0.265 | 24.20 | 67.2% | 73.2% |
 
-All six towns: 15/15 runs each, 0 collisions. Of 23,715 logged ticks, the LiDAR
-reported an obstacle that ground truth did not in 136 ticks (0.6%). 130 of these came from
-three Town05 runs, where a steep road crest 33–53 m ahead was briefly read as an obstacle
-while the car pulled away (semantic-LiDAR tag: road). None of them changed the vehicle's
-behaviour. "Missed" ticks (373) are almost all the first tick of a run, before the first
-sweep arrives, and the moment the obstacle slides out of the corridor during a lane change.
+The labelled dataset contains 1,674 frames: drives 0–1 (1,116 frames) were used for tuning and drive 2 (558 frames) was held out. Frames with |true offset| >1.5 m are excluded. MAE uses detected frames; sign metrics use |true offset| >0.2 m. Missed detections count as wrong offset signs; steering includes loss decay. Overall values pool frames. The test offset MAE of 0.265 m rounds to 0.27 m.
 
-**Additional observations from the logs**
+With 0.05 m LiDAR range noise, Town04 achieved 15/15 successes and zero collisions. Distance MAE was 1.14 m for obstacle_stop and 1.02 m for obstacle_avoid (about 1.1 m). This is a small sensitivity test, not a full noisy-sensor evaluation.
 
-- S2: the stopping gap was 5.75–9.75 m in every town. This is always above the 4 m design
-  margin, and none of the 30 runs needed the emergency brake (< 5 m).
-- S3: no run needed an emergency stop. The peak lateral displacement was 3.21–3.72 m,
-  which is one full lane. The whole manoeuvre (lane change → pass → return) took 10.4 s on
-  average (7.7–19.6 s).
+*Fig. 2 – figures/Town04_curve_stop_run1.png: Run B braking behind an obstacle on a curve.*
 
-*Fig. 1 – `figures/Town01_obstacle_avoid_run1.png`: overtaking through the oncoming lane
-on Town01. Blue = AVOID/PASSING, green = RETURN.*
-*Fig. 2 – `figures/Town03_obstacle_stop_run1.png`: braking (orange) and holding stopped
-(red) about 10 m from the obstacle.*
-*Fig. 3 – `figures/Town04_obstacle_avoid_run2.png`: lane change on the multi-lane
-highway.*
-*Fig. 4 – `figures/Town05_empty_lane_run1.png`: lane following with no obstacle.*
+*Fig. 3 – figures/Town04_lead_vehicle_run1.png: Run B FOLLOW behind a moving lead vehicle.*
+
+*Fig. 4 – figures/Town01_oncoming_overtake_run1.png: Run B waits for oncoming traffic and then overtakes.*
 
 ### D. Discussion
 
-**What worked.**
+The core stop and avoid scenarios, both curve scenarios, and lead_vehicle all completed without collisions. These results support the tested controller with LiDAR and map steering. They do not establish camera robustness across the full scenario set.
 
-- **Robust across maps.** All 90 runs succeeded with zero collisions across six towns,
-  with different lane widths, mild curves, both lane-change directions (same-direction
-  lane and oncoming lane), and randomised speeds and distances. The logic does not depend
-  on one specific map.
-- **Stopping is speed-aware.** The braking point is the stopping distance
-  d = v·t_react + v²/(2a) + margin, so faster runs started braking earlier. Reaction
-  distances of 8.75–11.75 m match the formula for 6–10 m/s. The vehicle always stopped
-  smoothly before reaching the emergency zone.
-- **Lane change starts early enough.** The avoid trigger adds the distance covered during
-  a lane change (v × 2.5 s), so S3 always began its manoeuvre 24–31 m ahead and kept at
-  least 8.75 m from the obstacle.
-- **Stop vs. steer-around decision.** In S2 the adjacent lane was correctly judged
-  blocked in 30/30 runs, so the vehicle never tried to pull out into the second parked
-  car.
+Lead_brake succeeded in 21/25 runs. The failed runs remained about 5–6 m behind the lead but did not reach the final stopped-speed threshold within the time limit. Across this scenario, the mean minimum gap was 6.01 m (5.24–6.79 m). The controller avoided contact, but its low-speed convergence needs improvement.
 
-**Trade-off between stopping and avoiding.** Avoiding keeps the vehicle moving, but it
-needs a free adjacent lane and takes about 10 s and roughly 60–100 m of road. Stopping is
-simpler and always available, but it blocks progress indefinitely. Our policy prefers
-avoidance only when the adjacent lane is verified free over the whole detection range
-(60 m). Otherwise it stops.
+Oncoming_overtake succeeded in 18/20 runs. Both failures were in Town02_Opt. Run 2 has waited_for_oncoming=True and did not complete the manoeuvre. Run 4 has waited_for_oncoming=False in per_run.csv, which conflicts with the description that both runs remained safe. The stored flag uses the half-lane approach criterion, so the supplied data do not support claiming that every oncoming run was safe. This discrepancy needs review before a stronger safety claim.
 
-**What did not work at first (development iterations).** Testing in CARLA exposed
-problems that unit tests on a simplified model did not catch. Each was fixed and
-regression-tested (28 automated tests):
+Curve_stop had LiDAR distance MAE 2.63 m, larger than the straight stop value of 0.47 m. The comparison mixes lane-arc ground-truth distance with straight-line LiDAR distance on curves; part of the error is geometric rather than a missed obstacle. All 20 curve-stop runs passed, with minimum gaps of 2.57–10.21 m.
+
+Camera closed-loop success was 17/18, with the Town03_Opt road departure. Offline detection was 91.2%, but steering-sign agreement was only 73.2%. Town01 and Town10HD were weak: offset MAE 0.350 and 0.517 m, and steering-sign agreement 38.2% and 52.4%. Town01 heading MAE remained 123.73°; junction cross-road edges also survived fallback in Town10HD. Detection alone is therefore insufficient evidence of correct steering.
+
+**What did not work at first (development iterations).** The original twelve rows are retained; subsequent problems and fixes are drawn from git history after 9c0a7ed, with safety and timing problems first.
 
 | # | Problem observed in CARLA | Cause | Fix |
 |---|---|---|---|
@@ -195,53 +169,29 @@ regression-tested (28 automated tests):
 | 10 | LiDAR: 101 false-alarm ticks in one Town04 avoid run; gap *grew* while driving | The search corridor bent with the yaw rate and swept onto the guardrail | Corridor follows the lane shape from the map |
 | 11 | LiDAR: car changed lanes on an empty Town04 road | Elevated highway: terrain below the road pulled the road-height estimate down, so the road looked like an obstacle | Estimate road height only from points near the path |
 | 12 | LiDAR: 1,564 false-alarm ticks in the first 90-run LiDAR evaluation, mostly Town01/02/10HD | Where the road turns, the corridor continued straight ahead into trees and buildings (found with semantic-LiDAR tags) | Only search as far as the lane path reaches; false alarms fell to 136 |
+| 13 | Delayed braking and collisions with sensors under load | Sensor callbacks returned old simulation frames | Bounded wait for the current frame; reuse the same LiDAR sweep within a tick |
+| 14 | Moving lead was overtaken and cut off during merge-back | Motion confirmation delayed the no-overtake decision | Block AVOID as soon as the speed estimate suggests motion, before confirmation |
+| 15 | Oncoming cars at 60–80 m disappeared from LiDAR | Empty range bins reset road height and cars were filtered as road | Retain the last road height through empty bins; extend moving-traffic LiDAR to 185 m |
+| 16 | Pull-out became unsafe when adjacent traffic approached | A distance-only adjacent-lane check ignored closing speed | Project clearance over 9 s; require 1 s continuously free; ABORT home if clearance closes |
+| 17 | Parked cars briefly triggered FOLLOW after spawning | Spawn settling looked like obstacle motion | Confirm motion over 0.5 s and after 3 m driven |
+| 18 | Home lane could be the neighbouring lane at spawn | Vehicle snapped sideways while dropping from spawn height | Anchor home lane to the scenario start waypoint |
+| 19 | Ego could not pull out after waiting for oncoming traffic | Stopping too close left insufficient steering room | Wait 10 m back; use stronger low-speed pull-out gains and creep recovery |
+| 20 | Camera selected road edges or inconsistent boundary pairs | Colour-only masks and weak geometry checks accepted wrong edges | Local contrast, yellow and curb masks; wider ROI; pair checks and lane-width prior |
+| 21 | Camera steering oscillated between estimates | Individual boundary estimates were unstable | Median filter and steering rate limit |
 
 **Limitations.**
 
-1. **Perception is partly idealised.** Run B uses real LiDAR for obstacles, but the LiDAR
-   is noise-free (CARLA ray casting), the lane corridor comes from the map, and lane
-   steering is still ground truth. Sensor noise and the camera lane module are untested.
-   Steep road crests can still be read as obstacles (Town05).
-2. **Static obstacles only.** Parked cars were used. Moving obstacles, pedestrians, and
-   oncoming traffic during an overtake were not tested. Overtaking through the oncoming
-   lane currently assumes the 60 m range is enough, while real oncoming traffic needs a
-   time-to-collision check.
-3. **Distance resolution.** The fallback obstacle detector walks the lane in 1 m steps,
-   so the reported gaps and reaction distances are accurate to about ±1 m (visible as
-   steps in the plots).
-4. **Lane keeping in curves.** Two S1 runs (Town02 run 2, Town10HD run 3) reached
-   0.54–0.58 m offset in curves because the pure-pursuit fallback cuts corners. This is
-   well inside the 3.5–4 m lane, but it is the largest lane-keeping error observed.
-5. **Slow manoeuvre.** Lane changes are deliberately gentle (steer ≤ 0.4), and the return
-   phase converges slowly. A planned trajectory would shorten the 10 s manoeuvre.
-6. **Sample size.** 5 runs per town and scenario (90 in total). CARLA in synchronous mode
-   is deterministic, so variation comes only from the randomised start, distance and speed.
+Run A evaluates the original static-obstacle code. Run B adds moving leads and oncoming traffic, but does not cover pedestrians, dense mixed traffic or arbitrary interactions. Its steering and LiDAR corridor still depend on map geometry. Run C demonstrates camera integration on a small core-scenario subset; offline town-dependent errors and the closed-loop collision remain unresolved. The noise experiment covers only Town04 and one range-noise setting, without real sensor artefacts or adverse weather. Five seeded runs per available town/scenario provide limited coverage, and skipped road configurations are not successes. _Opt maps avoid renderer failures but limit claims about standard-map execution. Junction route planning and navigation are not implemented; this is Khalid's E5 card. Gentle lane changes and conservative clearance checks can delay or prevent completion.
 
 ---
 
 ## VI. Conclusion & Future Work  *(shared: Adil + Abir + Omar)*
 
-This project produced a simulated autonomous vehicle in CARLA that follows its lane,
-detects obstacles ahead, and decides whether to stop or steer around them. The modular
-design, with separate lane-following, obstacle-detection, and collision-avoidance modules
-connected through small interfaces, let the team develop and test each part on its own
-before integrating them. Across 90 randomised test runs in six CARLA towns, the vehicle succeeded in 100% of
-the empty-lane, obstacle-stop and obstacle-avoid scenarios with zero collisions, using
-ground-truth perception, and again in 90/90 runs with zero collisions when obstacles and the
-adjacent lane were detected by the team's LiDAR module. Integrating the camera lane module is
-the next step.
+This project implemented lane following, LiDAR obstacle detection and a stop/follow/avoid controller in CARLA. The original ground-truth Run A achieved 90/90 successes with zero collisions. Final Run B achieved 194/200 successes with zero collisions across eight scenarios and six towns using LiDAR and map-waypoint steering. Camera steering plus LiDAR achieved 17/18 successes with one collision. The offline held-out lane-detector test achieved 91.2% detection, 0.27 m offset MAE and 73.2% steering-sign agreement. The Town04 LiDAR noise test achieved 15/15 successes. These results show that the tested LiDAR and controller combination handled the selected cases, while camera robustness and timely task completion remain limitations.
 
 Future work:
-1. **Dynamic obstacles**: estimate obstacle velocity and use time-to-collision instead of
-   distance alone.
-2. **Sensor fusion**: combine camera object detection (for example a YOLO-family
-   detector) with LiDAR to reduce false positives.
-3. **Smoother manoeuvres**: replace the lateral P-controller with a planned trajectory
-   (for example a polynomial lane-change path [8]) or model predictive control.
-4. **Learning-based control**: compare the rule-based pipeline against end-to-end or
-   imitation-learning approaches [6], [7].
-5. **Broader testing**: more towns, weather and lighting conditions, junctions, and
-   CARLA ScenarioRunner scenarios.
+
+Improve low-speed stopping convergence and safe oncoming-manoeuvre completion; repair camera boundary and heading errors across towns; expand camera and noisy-sensor tests to moving traffic, weather and lighting changes; implement junction navigation (Khalid's E5 card); and compare smoother planned lane-change trajectories [8] with the current PD-style controller.
 
 ---
 

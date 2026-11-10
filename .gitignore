@@ -29,3 +29,4 @@ data/
 carla_av/results_full_lidar/
 carla_av/results_final_lidar/
 carla_av/results_final_lidar_patch/
+report/video/csv/

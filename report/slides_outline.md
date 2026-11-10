@@ -14,7 +14,7 @@ Prithiv owns simulation and integration, while Adil owns lane detection and stee
 
 ## 4. Architecture
 
-The architecture separates sensing, obstacle detection, decision making, and control, with ownership shown in the diagram. The obstacle interface supplies distance and adjacent-lane availability to the decision module. The diagram also shows the intended camera lane branch, which is still pending integration. In the reported evaluations, lane steering and the LiDAR corridor use map information.
+The architecture separates sensing, obstacle detection, decision making, and control, with ownership shown in the diagram. The obstacle interface supplies distance and adjacent-lane availability to the decision module. The diagram also shows the camera lane branch, which is evaluated separately in Run C. In the reported evaluations, lane steering and the LiDAR corridor use map information.
 
 ## 5. Obstacle detection
 
@@ -22,30 +22,38 @@ A roof-mounted, 32-channel LiDAR supplies one sweep per tick. A range gate first
 
 ## 6. Decision logic
 
-The controller uses seven modes, shown as the normal stop and avoidance branches. The stopping threshold combines reaction distance, braking distance, and a margin. Avoidance is allowed only if the adjacent lane is free over 60 m. An obstacle below 5 m triggers emergency braking in any mode, and braking preserves the manoeuvre state when needed.
+The controller includes FOLLOW and ABORT alongside the modes, shown as the normal stop and avoidance branches. The stopping threshold combines reaction distance, braking distance, and a margin. Avoidance requires projected adjacent clearance and a 1 s debounce. Moving scenarios extend sensing to 180 m. An obstacle below 5 m triggers emergency braking in any mode, and braking preserves the manoeuvre state when needed.
 
 ## 7. Test design
 
-We test across six towns with three scenarios and five seeded runs for each combination. The scenarios are an empty lane, an obstacle with a blocked adjacent lane, and an obstacle with a free adjacent lane. The same seed set is evaluated once with ground-truth obstacle perception and once with LiDAR. Lane steering remains based on map ground truth in both evaluations.
+Run A preserves 90 original ground-truth runs. Final Run B uses LiDAR obstacle and adjacent-lane detection with map steering. Core scenarios have 30 runs each, curve scenarios 20 each, lead scenarios 25 each and oncoming overtakes 20. Some town/scenario combinations are unavailable. Run C is a separate 18-run camera-steering evaluation; noise testing is a separate 15-run Town04 experiment.
 
 ## 8. Results
 
-Both perception configurations completed all 90 runs successfully with no collisions. LiDAR distance MAE was 0.48 m for stopping and 0.44 m for avoidance. False alarms occurred on 136 of 23,715 ticks, or 0.6 percent, and none changed vehicle behaviour. These outcomes apply to the tested static-obstacle scenarios with ground-truth lane steering.
+Final Run B achieved 194/200 successes and zero collisions with map-waypoint steering. Four lead-brake runs did not fully stop within the time limit despite staying about 5–6 m behind. Two Town02_Opt oncoming runs failed. Run 2 has waited_for_oncoming=True; run 4 has False, contradicting a claim that both remained safe. Zero collisions does not establish safe lane use.
 
-## 9. Example runs
+## 9. Moving traffic
 
-These plots illustrate the ground-truth evaluation runs rather than the LiDAR distance-error measurements. Town01 demonstrates an avoidance manoeuvre through the empty oncoming lane. Town03 demonstrates braking and holding stopped behind an obstacle. Town04 demonstrates avoidance on a multi-lane highway, with the manoeuvre returning to the original lane.
+Gap tracking estimates obstacle speed. FOLLOW uses a desired gap of 6 m plus 1.8 s times ego speed and brakes below 3 s TTC. Possibly moving obstacles cannot be overtaken, including before motion confirmation. Adjacent clearance must remain free for 1 s; unsafe committed pull-outs ABORT back behind the obstacle when room allows. Low-speed pull-out control supports restarting after waiting. Moving scenarios use 64-channel 185 m LiDAR because an overtake needs approximately 150 m of visibly free lane.
 
-## 10. What broke and how we fixed it
+## 10. Camera lane detection
 
-CARLA testing revealed twelve problems that were fixed during development; this slide selects four. Road and lane identifiers changed between segments, so adjacency checks moved to geometry. LiDAR guardrail detections were reduced by following the lane shape, and elevated-road errors were addressed by estimating road height near the path only. Limiting the corridor to the end of the path reduced false-alarm ticks from 1,564 to 136.
+The pipeline combines local-contrast white and yellow masks with curb edges, a wider ROI, boundary-pair checks and a lane-width prior. PD steering uses median filtering and a rate limit. Tuning used drives 0–1 of 1,674 labelled CARLA frames; held-out drive 2 has 558 frames. Detection is 91.2%, offset MAE 0.265 m rounded to 0.27 m, and steering-sign agreement 73.2%. MAE uses detected frames and sign metrics use absolute true offset above 0.2 m. Town01 and Town10HD remain weak. Run C achieved 17/18, with one collision after Town03_Opt empty_lane run 1 drifted off the road.
 
-## 11. Limitations & next steps
+## 11. Example runs
 
-Lane steering still uses ground truth, and Adil's camera lane module is the next integration step. The current experiments use static obstacles, so moving traffic requires time-to-collision reasoning. The LiDAR is noise-free, and steep crests in Town05 can still produce false alarms. Further work includes sensor noise and city navigation through junctions, with Khalid contributing to navigation.
+All three plots are from final Run B. The curve-stop example shows braking on curved geometry. The lead-vehicle example shows FOLLOW. The oncoming example shows waiting before completing the pass and return. These runs use map steering, not camera steering.
 
-## 12. Demo / Q&A
+## 12. What broke and how we fixed it
 
-The recorded demonstration is available in the GitHub release tagged v0.1-demo. The command shown runs a Town04 demonstration with LiDAR obstacle and adjacent-lane detection, a HUD, and real-time pacing. It is provided for use with a running CARLA environment; building this presentation does not start CARLA. We welcome questions about detection, decision logic, testing, and remaining integration work.
+The LiDAR corridor originally swept onto guardrails; it now follows map lane geometry. Stale sensor frames delayed braking under load; bounded current-frame reads fix this. Oncoming cars at 60–80 m were filtered as road after empty height bins; retaining the last height and extending LiDAR range supports early detection. Standard maps crashed the CARLA renderer, so Town02, Town03 and Town05 use layered _Opt variants in final Run B.
+
+## 13. Limitations & next steps
+
+Run B includes selected moving traffic, but not pedestrians or dense traffic. Map steering and map corridor geometry remain dependencies. Camera testing is small and town-dependent. Noise testing is limited to one town and range-noise level; it achieved 15/15, with obstacle-distance MAE about 1.1 m. Junction navigation is not implemented and remains Khalid's E5 card. The final matrix uses _Opt maps for renderer compatibility.
+
+## 14. Demo / Q&A
+
+The recorded demo is in the GitHub release tagged v0.1-demo. It predates the final results. Building these documents does not start CARLA. Final results: Run B 194/200 with zero collisions; Run C 17/18 with one collision. Questions can address detection, control, test coverage and the remaining camera and navigation work.
 
 All requested facts placed in slides or speaker notes.

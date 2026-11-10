@@ -85,11 +85,11 @@ def intro(prs: Presentation) -> None:
 
 
 def methods(prs: Presentation) -> None:
-    s = new_slide(prs, "Architecture", "The architecture separates sensing, obstacle detection, decision making, and control, with ownership shown in the diagram. The obstacle interface supplies distance and adjacent-lane availability to the decision module. The diagram also shows the intended camera lane branch, which is still pending integration. In the reported evaluations, lane steering and the LiDAR corridor use map information.")
+    s = new_slide(prs, "Architecture", "The architecture separates sensing, obstacle detection, decision making, and control, with ownership shown in the diagram. The obstacle interface supplies distance and adjacent-lane availability to the decision module. The diagram also shows the camera lane branch, which is evaluated separately in Run C. In the reported evaluations, lane steering and the LiDAR corridor use map information.")
     picture(s, "architecture_owners.png", 0.7, 1.35, 8.0, 5.45)
-    box(s, "Perception → decision → control\n\nSmall module interfaces\n\nCamera lane integration pending\n\nEvaluated steering: map ground truth", 9.0, 1.85, 3.6, 4.8, 20)
+    box(s, "Perception → decision → control\n\nSmall module interfaces\n\nCamera steering: Run C\n\nFinal Run B: map steering", 9.0, 1.85, 3.6, 4.8, 20)
     s = new_slide(prs, "Obstacle detection", "A roof-mounted, 32-channel LiDAR supplies one sweep per tick. A range gate first filters the points, then a lane-shaped corridor from the map selects the relevant path. Road removal uses grade-limited height estimates in 2 m bins. A cluster must contain at least 3 points within 1 m to count as an obstacle.")
-    box(s, "32-channel roof LiDAR · one sweep per tick", 0.8, 1.65, 11.8, 0.6, 24, True)
+    box(s, "32-channel core / 64-channel moving · frame-synchronised", 0.8, 1.65, 11.8, 0.6, 24, True)
     stages = [("Range gate", "Filter the sweep"), ("Lane corridor", "Follow map geometry"), ("Road removal", "2 m bins\nGrade-limited"), ("Cluster check", "≥3 points\nWithin 1 m")]
     for i, (title, detail) in enumerate(stages):
         x = 0.75+i*3.15
@@ -98,10 +98,10 @@ def methods(prs: Presentation) -> None:
         box(s, detail, x, 4.1, 2.7, 1.2)
         if i < 3:
             box(s, "→", x+2.7, 3.4, 0.4, 0.6, 20)
-    s = new_slide(prs, "Decision logic", "The controller uses seven modes, shown as the normal stop and avoidance branches. The stopping threshold combines reaction distance, braking distance, and a margin. Avoidance is allowed only if the adjacent lane is free over 60 m. An obstacle below 5 m triggers emergency braking in any mode, and braking preserves the manoeuvre state when needed.")
+    s = new_slide(prs, "Decision logic", "The controller includes FOLLOW and ABORT alongside the modes, shown as the normal stop and avoidance branches. The stopping threshold combines reaction distance, braking distance, and a margin. Avoidance requires projected adjacent clearance and a 1 s debounce. Moving scenarios extend sensing to 180 m. An obstacle below 5 m triggers emergency braking in any mode, and braking preserves the manoeuvre state when needed.")
     box(s, "CRUISE", 0.8, 1.6, 2.2, 0.65, 24, True, ACCENT)
     box(s, "Blocked adjacent lane → BRAKE → STOPPED", 1.25, 2.5, 11.2, 0.6, 22)
-    box(s, "Free over 60 m → AVOID → PASSING → RETURN → CRUISE", 1.25, 3.35, 11.2, 0.65, 20)
+    box(s, "Projected clearance + 1 s free → AVOID → PASSING → RETURN", 1.25, 3.35, 11.2, 0.65, 20)
     box(s, "Any mode · obstacle below 5 m → EMERGENCY_STOP", 1.25, 4.2, 11.2, 0.6, 20)
     rule(s, 0.8, 5.1, 11.7)
     box(s, "d_stop = v·t_react + v²/(2a) + margin", 0.8, 5.4, 11.8, 0.65, 26, True)
@@ -109,54 +109,55 @@ def methods(prs: Presentation) -> None:
 
 
 def evidence(prs: Presentation) -> None:
-    s = new_slide(prs, "Test design", "We test across six towns with three scenarios and five seeded runs for each combination. The scenarios are an empty lane, an obstacle with a blocked adjacent lane, and an obstacle with a free adjacent lane. The same seed set is evaluated once with ground-truth obstacle perception and once with LiDAR. Lane steering remains based on map ground truth in both evaluations.")
-    box(s, "6 towns × 3 scenarios × 5 seeded runs", 0.8, 1.7, 11.7, 0.8, 30, True)
-    box(s, "90 runs per perception source", 0.8, 2.65, 11.7, 0.65, 28, True, ACCENT)
-    for i, text in enumerate(["Empty lane → follow the lane", "Obstacle stop → adjacent lane blocked", "Obstacle avoid → adjacent lane free"]):
-        box(s, text, 0.85, 3.65+i*0.7, 11.7, 0.6)
-    box(s, "Repeated with ground truth and LiDAR · same seeds", 0.8, 6.15, 11.7, 0.6, 20, True)
-    s = new_slide(prs, "Results", "Both perception configurations completed all 90 runs successfully with no collisions. LiDAR distance MAE was 0.48 m for stopping and 0.44 m for avoidance. False alarms occurred on 136 of 23,715 ticks, or 0.6 percent, and none changed vehicle behaviour. These outcomes apply to the tested static-obstacle scenarios with ground-truth lane steering.")
-    for x, name in [(0.85, "Ground truth"), (7.0, "LiDAR")]:
-        box(s, name, x, 1.55, 5.4, 0.5, 24, True)
-        box(s, "90/90", x, 2.2, 5.4, 0.85, 42, True, ACCENT)
-        box(s, "successful runs", x, 3.13, 5.4, 0.5)
-        box(s, "0 collisions", x, 3.8, 5.4, 0.6, 30, True, ACCENT)
-        rule(s, x, 4.65, 5.35)
-    box(s, "Obstacle source: actor geometry\nDistance MAE: reference\nFalse alarms: reference", 0.85, 4.95, 5.4, 1.7)
-    box(s, "Distance MAE: 0.48 m stop / 0.44 m avoid\nFalse alarms: 136 / 23,715 ticks (0.6%)\nBehaviour changes from false alarms: none", 7.0, 4.95, 5.4, 1.7, 18)
-    s = new_slide(prs, "Example runs", "These plots illustrate the ground-truth evaluation runs rather than the LiDAR distance-error measurements. Town01 demonstrates an avoidance manoeuvre through the empty oncoming lane. Town03 demonstrates braking and holding stopped behind an obstacle. Town04 demonstrates avoidance on a multi-lane highway, with the manoeuvre returning to the original lane.")
-    plots = [("Town01_obstacle_avoid_run1.png", "Town01 · avoid"), ("Town03_obstacle_stop_run1.png", "Town03 · stop"), ("Town04_obstacle_avoid_run2.png", "Town04 · avoid")]
-    for i, (filename, caption) in enumerate(plots):
+    s = new_slide(prs, "Test design", "Run A preserves 90 original ground-truth runs. Final Run B uses LiDAR obstacle and adjacent-lane detection with map steering. Core scenarios have 30 runs each, curve scenarios 20 each, lead scenarios 25 each and oncoming overtakes 20. Some town/scenario combinations are unavailable. Run C is a separate 18-run camera-steering evaluation; noise testing is a separate 15-run Town04 experiment.")
+    box(s, "Run B: 8 scenarios across 6 towns · 200 runs", 0.8, 1.65, 11.7, 0.7, 28, True)
+    box(s, "Core: empty lane / stop / avoid\nCurves: lane following / stopping (45–120°)\nMoving: lead vehicle / lead brake / oncoming overtake", 0.8, 2.65, 11.7, 2.0, 24)
+    box(s, "Run A: 90 original ground-truth runs\nRun C: 18 camera + LiDAR runs\nNoise: 15 Town04 runs · LiDAR noise 0.05 m", 0.8, 5.0, 11.7, 1.45, 20)
+    s = new_slide(prs, "Results", "Final Run B achieved 194/200 successes and zero collisions with map-waypoint steering. Four lead-brake runs did not fully stop within the time limit despite staying about 5–6 m behind. Two Town02_Opt oncoming runs failed. Run 2 has waited_for_oncoming=True; run 4 has False, contradicting a claim that both remained safe. Zero collisions does not establish safe lane use.")
+    box(s, "200 runs · 194/200 successful · 0 collisions", 0.8, 1.45, 11.8, 0.7, 30, True, ACCENT)
+    rows = [("Scenario", "Success", "Collisions"), ("empty_lane", "30/30", "0"), ("obstacle_stop", "30/30", "0"), ("obstacle_avoid", "30/30", "0"), ("curve_lane", "20/20", "0"), ("curve_stop", "20/20", "0"), ("lead_vehicle", "25/25", "0"), ("lead_brake", "21/25", "0"), ("oncoming_overtake", "18/20", "0")]
+    for i, row in enumerate(rows):
+        y = 2.35+i*0.40
+        for x, width, value in zip([0.85, 6.6, 9.2], [5.5, 2.2, 2.4], row):
+            box(s, value, x, y, width, 0.39, 17, i == 0)
+    box(s, "Failures: 4 lead-brake timeouts + 2 oncoming; one oncoming safety flag is False", 0.8, 6.25, 11.8, 0.48, 17)
+    s = new_slide(prs, "Moving traffic", "Gap tracking estimates obstacle speed. FOLLOW uses a desired gap of 6 m plus 1.8 s times ego speed and brakes below 3 s TTC. Possibly moving obstacles cannot be overtaken, including before motion confirmation. Adjacent clearance must remain free for 1 s; unsafe committed pull-outs ABORT back behind the obstacle when room allows. Low-speed pull-out control supports restarting after waiting. Moving scenarios use 64-channel 185 m LiDAR because an overtake needs approximately 150 m of visibly free lane.")
+    box(s, "FOLLOW: gap = 6 m + 1.8 s × speed\nTTC <3 s → brake\nNever overtake a possibly moving lead\n\nOncoming: nearest − closing·9 s >10 m\n1 s free before pull-out · ABORT if blocked\n64 channels · 185 m LiDAR", 0.8, 1.6, 5.6, 4.65, 20)
+    picture(s, "Town04_lead_vehicle_run1.png", 6.65, 1.7, 5.9, 4.6)
+    box(s, "Run B · Town04 · FOLLOW", 6.65, 6.35, 5.9, 0.4, 17)
+    s = new_slide(prs, "Camera lane detection", "The pipeline combines local-contrast white and yellow masks with curb edges, a wider ROI, boundary-pair checks and a lane-width prior. PD steering uses median filtering and a rate limit. Tuning used drives 0–1 of 1,674 labelled CARLA frames; held-out drive 2 has 558 frames. Detection is 91.2%, offset MAE 0.265 m rounded to 0.27 m, and steering-sign agreement 73.2%. MAE uses detected frames and sign metrics use absolute true offset above 0.2 m. Town01 and Town10HD remain weak. Run C achieved 17/18, with one collision after Town03_Opt empty_lane run 1 drifted off the road.")
+    box(s, "White contrast + yellow + curb edges\nWider ROI → boundary-pair geometry\nLane-width prior → PD steering\nMedian filter + steering rate limit", 0.8, 1.65, 5.65, 2.9, 22)
+    box(s, "Held-out test: drive 2\n91.2% detection\n0.27 m offset MAE\n73.2% steering-sign agreement", 7.0, 1.65, 5.5, 2.9, 23, True)
+    box(s, "1,674 labelled frames · tune drives 0–1 / test drive 2\nClosed loop: 17/18 · 1 collision (Town03_Opt road departure)\nWeak offline towns: Town01 and Town10HD", 0.8, 5.05, 11.8, 1.45, 21)
+    s = new_slide(prs, "Example runs", "All three plots are from final Run B. The curve-stop example shows braking on curved geometry. The lead-vehicle example shows FOLLOW. The oncoming example shows waiting before completing the pass and return. These runs use map steering, not camera steering.")
+    for i, (name, title) in enumerate([("Town04_curve_stop_run1.png", "Town04 · curve stop"), ("Town04_lead_vehicle_run1.png", "Town04 · FOLLOW"), ("Town01_oncoming_overtake_run1.png", "Town01 · oncoming")]):
         x = 0.65+i*4.2
-        box(s, caption, x, 1.6, 4.0, 0.55, 20, True)
-        picture(s, filename, x, 2.3, 4.0, 4.05)
+        box(s, title, x, 1.6, 4, 0.6, 20, True)
+        picture(s, name, x, 2.35, 4, 4.05)
 
 
 def closing(prs: Presentation) -> None:
-    s = new_slide(prs, "What broke and how we fixed it", "CARLA testing revealed twelve problems that were fixed during development; this slide selects four. Road and lane identifiers changed between segments, so adjacency checks moved to geometry. LiDAR guardrail detections were reduced by following the lane shape, and elevated-road errors were addressed by estimating road height near the path only. Limiting the corridor to the end of the path reduced false-alarm ticks from 1,564 to 136.")
-    rows = [("Road/lane IDs changed between segments", "Geometric lateral-offset check"), ("LiDAR corridor swept onto a guardrail", "Lane-shaped corridor from the map"), ("Elevated highway looked like an obstacle", "Road height from points near the path"), ("Corridor reached trees beyond road turns", "Stop at path end · false alarms 1,564 → 136")]
-    box(s, "Observed problem", 0.8, 1.55, 5.6, 0.5, 20, True)
-    box(s, "Fix", 7.0, 1.55, 5.5, 0.5, 20, True)
+    s = new_slide(prs, "What broke and how we fixed it", "The LiDAR corridor originally swept onto guardrails; it now follows map lane geometry. Stale sensor frames delayed braking under load; bounded current-frame reads fix this. Oncoming cars at 60–80 m were filtered as road after empty height bins; retaining the last height and extending LiDAR range supports early detection. Standard maps crashed the CARLA renderer, so Town02, Town03 and Town05 use layered _Opt variants in final Run B.")
+    rows = [("LiDAR corridor hit guardrails", "Follow map lane geometry"), ("Stale sensor frames delayed braking", "Read the current simulation frame"), ("Oncoming cars lost at 60–80 m", "Keep height through empty bins; 185 m range"), ("CARLA renderer crashed on standard maps", "Use Town02/03/05_Opt variants")]
     for i, (problem, fix) in enumerate(rows):
-        y = 2.35+i*1.05
-        box(s, problem, 0.8, y, 5.7, 0.75)
+        y = 1.75+i*1.2
+        box(s, problem, 0.8, y, 5.6, 0.9, 21)
         box(s, "→", 6.45, y, 0.45, 0.6)
-        box(s, fix, 7.0, y, 5.5, 0.8)
-        rule(s, 0.8, y+0.89, 11.7)
-    s = new_slide(prs, "Limitations & next steps", "Lane steering still uses ground truth, and Adil's camera lane module is the next integration step. The current experiments use static obstacles, so moving traffic requires time-to-collision reasoning. The LiDAR is noise-free, and steep crests in Town05 can still produce false alarms. Further work includes sensor noise and city navigation through junctions, with Khalid contributing to navigation.")
+        box(s, fix, 7.0, y, 5.5, 0.9, 21)
+        rule(s, 0.8, y+1.0, 11.7)
+    s = new_slide(prs, "Limitations & next steps", "Run B includes selected moving traffic, but not pedestrians or dense traffic. Map steering and map corridor geometry remain dependencies. Camera testing is small and town-dependent. Noise testing is limited to one town and range-noise level; it achieved 15/15, with obstacle-distance MAE about 1.1 m. Junction navigation is not implemented and remains Khalid's E5 card. The final matrix uses _Opt maps for renderer compatibility.")
     box(s, "Current limits", 0.8, 1.6, 5.6, 0.6, 24, True)
     box(s, "Next steps", 7.0, 1.6, 5.5, 0.6, 24, True)
-    pairs = [("Ground-truth lane steering", "Integrate Adil’s camera lane module"), ("Static obstacles only", "Moving obstacles + time-to-collision"), ("Noise-free LiDAR", "Introduce sensor noise"), ("Town05: steep-crest false alarms", "City junction navigation · Khalid")]
+    pairs = [("Map steering in final Run B", "Improve camera robustness across towns"), ("Lead-brake / oncoming non-completions", "Improve stopping convergence and progress"), ("Noise: 15/15 in Town04 only", "Broader sensor / weather / traffic tests"), ("Junction navigation not implemented", "Khalid’s E5 card · junction routing")]
     for i, (limit, step) in enumerate(pairs):
-        y = 2.6+i*0.9
-        box(s, limit, 0.8, y, 5.6, 0.7)
-        box(s, step, 7.0, y, 5.5, 0.7)
-    s = new_slide(prs, "Demo / Q&A", "The recorded demonstration is available in the GitHub release tagged v0.1-demo. The command shown runs a Town04 demonstration with LiDAR obstacle and adjacent-lane detection, a HUD, and real-time pacing. It is provided for use with a running CARLA environment; building this presentation does not start CARLA. We welcome questions about detection, decision logic, testing, and remaining integration work.")
-    box(s, "Recorded demo", 0.8, 1.65, 11.8, 0.55, 24, True)
-    box(s, "GitHub release · v0.1-demo", 0.8, 2.3, 11.8, 0.6, 24)
-    box(s, "Live demo command", 0.8, 3.4, 11.8, 0.55, 24, True)
-    box(s, "python -m scenarios.run_scenarios --towns Town04 --runs 1\n--realtime --hud --obstacle lidar --adjacent lidar --out results_demo", 0.8, 4.15, 11.8, 1.0, 18)
-    box(s, "Questions & discussion", 0.8, 5.8, 11.8, 0.65, 30, True)
+        y = 2.5+i*1.0
+        box(s, limit, 0.8, y, 5.6, 0.85, 20)
+        box(s, step, 7.0, y, 5.5, 0.85, 20)
+    s = new_slide(prs, "Demo / Q&A", "The recorded demo is in the GitHub release tagged v0.1-demo. It predates the final results. Building these documents does not start CARLA. Final results: Run B 194/200 with zero collisions; Run C 17/18 with one collision. Questions can address detection, control, test coverage and the remaining camera and navigation work.")
+    box(s, "Final Run B: 194/200 · 0 collisions", 0.8, 1.8, 11.8, 0.8, 32, True, ACCENT)
+    box(s, "Camera Run C: 17/18 · 1 collision", 0.8, 3.0, 11.8, 0.7, 28)
+    box(s, "Recorded demo · GitHub release v0.1-demo\nEarlier demonstration; final evidence is Run B", 0.8, 4.4, 11.8, 1.2, 22)
+    box(s, "Questions & discussion", 0.8, 6.0, 11.8, 0.6, 28, True)
 
 
 def estimated_height(shape: Any, size: int) -> float:
@@ -173,7 +174,7 @@ def estimated_height(shape: Any, size: int) -> float:
 
 
 def validate(prs: Presentation) -> None:
-    assert 10 <= len(prs.slides) <= 12
+    assert 12 <= len(prs.slides) <= 14
     for slide in prs.slides:
         assert slide.notes_slide.notes_text_frame.text.strip()
         for shape in slide.shapes:

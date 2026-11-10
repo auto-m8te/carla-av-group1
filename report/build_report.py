@@ -9,7 +9,7 @@ from docx import Document
 from docx.document import Document as Doc
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches
+from docx.shared import Inches, Pt
 from docx.text.paragraph import Paragraph
 
 ROOT = Path(__file__).resolve().parent
@@ -121,10 +121,8 @@ def methodology(doc: Doc) -> None:
     p._p.addnext(caption._p)  # IEEE: figure captions go below the figure
 
 
-C_TEXT = "C. Perception and Sensor Suite. Lane perception uses a camera-based OpenCV pipeline: an HSV colour mask isolates white lane markings, followed by Canny edge detection [4], a trapezoidal region of interest and probabilistic Hough-line detection [5]. The fitted lane boundaries give the lateral displacement and heading error used by the steering controller. Obstacle perception uses a ray-cast LiDAR mounted centrally on the roof, 2.0 m above the ground, with 32 channels, a vertical field of view from +2° to −24°, a 70 m range and 600,000 points per second. Its rotation frequency equals the simulation rate, so every 0.05 s tick yields one full 360° sweep. The points are transformed into the vehicle frame (x forward, y right, z up) and processed in four steps. (1) A range gate keeps points between the front bumper and 60 m ahead and discards returns from the ego vehicle's own body. (2) A path corridor keeps points within the ego half-width plus 0.3 m of the predicted path; the path follows the shape of the current lane taken from the map, so the corridor bends with curves and ends where the lane turns away. (3) Road removal estimates the road height in 2 m range bins from the lowest returns within 3 m of the corridor, limits the change between bins to a 10 % grade, and keeps only points 0.35–2.5 m above the road, which also removes overhead signs and bridges. (4) A cluster check accepts the nearest group of at least three points within 1 m of depth, which rejects isolated noise returns. The obstacle distance is the gap between the front bumper and that cluster. The same filter, applied over the full width of the neighbouring lane from 15 m behind to 60 m ahead, decides whether the adjacent lane is free; until the first sweep has arrived the lane is reported as not free, so the vehicle never swerves blind."
-D_TEXT = 'D. Obstacle Distance and Decision Logic. The obstacle-distance interface supplies the bumper-to-bumper gap to the nearest obstacle in the driving path, or no value when the path is clear. Two sources were evaluated with identical seeds (Section V): the LiDAR module described above, and a ground-truth fallback that walks the lane in 1 m steps and measures the gap geometrically from actor positions (resolution about ±1 m). The decision logic compares the gap with the speed-dependent stopping distance d_stop = v·t_react + v²/(2a) + margin, with t_react = 1.0 s, a = 6.0 m/s² and margin = 4.0 m. Below 5 m the vehicle always brakes fully (emergency stop).'
+D_TEXT = 'D. Obstacle Distance and Decision Logic. The obstacle-distance interface supplies the bumper-to-bumper gap to the nearest obstacle in the driving path, or no value when the path is clear. The evaluations distinguish two sources (Section V): the LiDAR module described above, and a ground-truth fallback that walks the lane in 1 m steps and measures the gap geometrically from actor positions (resolution about ±1 m). The decision logic compares the gap with the speed-dependent stopping distance d_stop = v·t_react + v²/(2a) + margin, with t_react = 1.0 s, a = 6.0 m/s² and margin = 4.0 m. Below 5 m the vehicle always brakes fully (emergency stop).'
 F_TEXT = 'The implemented lateral controller is PD-style: steer = 0.10·e_lat − 1.5·e_heading, limited to ±0.4 during lane changes, where e_lat is the lateral error in metres and e_heading the heading error in radians. The speed controller uses a feed-forward throttle of 0.35 plus a proportional term of 0.15 per m/s of speed error.'
-G_TEXT = 'The full set of 90 runs was executed twice with the same seeds: once with ground-truth perception, which isolates the decision and control logic, and once with the LiDAR module providing both the obstacle distance and the adjacent-lane check. In the LiDAR runs the ground-truth values were logged alongside every tick to measure detection error. Lane steering used the map-waypoint fallback in both runs.'
 OBSTACLE = 'LiDAR-based obstacle detection usually removes the ground first and then groups the remaining points into objects. Himmelsbach et al. {HIM} fit ground lines in polar segments of the point cloud, and Zermas et al. {ZER} fit ground planes per range segment before clustering scan lines; the Point Cloud Library {PCL} provides Euclidean clustering for the second step. Learned detectors such as VoxelNet {VOX} and PointPillars {PP} predict 3D bounding boxes directly from the point cloud with high accuracy on driving benchmarks, but, like learned lane detectors, they need labelled data and GPU inference. For the single question our controller asks — how far ahead is the nearest object in our lane — a geometric pipeline is sufficient and can be checked against ground truth at every tick.'
 NEW_REFS = {
 'HIM': 'M. Himmelsbach, F. v. Hundelshausen, and H.-J. Wuensche, “Fast segmentation of 3D point clouds for ground vehicles,” in Proc. IEEE Intell. Vehicles Symp. (IV), 2010, pp. 560–565.',
@@ -137,6 +135,10 @@ NEW_REFS = {
 def update_method_text(doc: Doc) -> None:
     replace(find(doc, 'C. Perception'), C_TEXT)
     replace(find(doc, 'D. Obstacle Distance'), D_TEXT)
+    p = find(doc, 'E. Stop-or-Avoid')
+    replace(p, p.text.replace('over the full 60 m detection range', 'using the full configured sensing range and projected closing clearance (Section III-D)'))
+    p = find(doc, 'G. Test Methodology.')
+    replace(p, p.text.replace('The evaluation comprised 90 runs:', 'The original Run A evaluation comprised 90 runs:'))
     p = find(doc, 'F. Vehicle Control.')
     assert p.text.endswith('before submission.')
     replace(p, p.text.split('Although the project task description')[0] + F_TEXT)
@@ -153,7 +155,7 @@ def literature(doc: Doc) -> None:
     replace(find(doc, 'D. Positioning'), 'E. Positioning of This Work')
     p = find(doc, 'Our lane module')
     text = p.text.replace('so every decision can be traced.', 'so every decision can be traced. The obstacle module follows the geometric route of {HIM}, {ZER}: road removal per range bin and a cluster check inside a lane-shaped corridor taken from the map (Section III-C).')
-    text = text.replace('Section V currently uses ground-truth perception, and re-running it with the camera module is the next step.', 'Section V reports results with ground-truth perception and with the LiDAR module; re-running them with the camera lane module is the next step.')
+    text = text.replace('Section V currently uses ground-truth perception, and re-running it with the camera module is the next step.', 'Section V reports results with ground-truth perception and with the LiDAR module; a separate camera-steering evaluation is also reported.')
     replace(p, text)
     for p in doc.paragraphs:
         text = p.text
@@ -161,74 +163,6 @@ def literature(doc: Doc) -> None:
             text = text.replace('{'+key+'}', f'[{i}]')
         if text != p.text:
             replace(p, text)
-
-
-def perception(doc: Doc, md: str) -> None:
-    p = find(doc, 'Every tick was logged')
-    replace(p, p.text.split(' Perception:')[0])
-    block = md_block(md, '**Perception sources.**', '### B. Metrics')
-    parts = [clean_md(s) for s in re.split(r'\n\s*\n|\n(?=- )', block) if s.strip()]
-    anchor = insert_after(p, p, 'Perception sources. ' + parts[0])
-    replace(anchor, anchor.text, 'Perception sources.')
-    for part in parts[1:]:
-        bullet = part.startswith('- ')
-        anchor = insert_after(anchor, p, ('• ' + part[2:]) if bullet else part)
-        if bullet:
-            lead = anchor.text.split(':', 1)[0] + ':'
-            replace(anchor, anchor.text, lead)
-
-
-def results(doc: Doc, md: str) -> None:
-    template = doc.tables[0]
-    caption = next(p for p in doc.paragraphs if p.text == 'TABLE I')
-    subtitle = Paragraph(caption._p.getnext(), doc._body)  # e.g. "OVERALL RESULTS (...)"
-    observations = find(doc, 'In S2 the stopping gap')
-    anchor = Paragraph(observations._p.getprevious(), doc._body)
-    cap = insert_after(anchor, caption, 'TABLE III')
-    cap = insert_after(cap, subtitle, 'RUN B: LIDAR PERCEPTION (30 RUNS PER SCENARIO, SAME SEEDS)')
-    table = make_table(doc, cap, md_rows(md, '**Table III'), template)
-    text = clean_md(md_block(md, 'All six towns:', '**Additional observations'))
-    p = insert_after(cap, observations, 'All six towns: ' + text)
-    table._tbl.addnext(p._p)
-    for p in doc.paragraphs:
-        if p.text.startswith('Fig. ') and not p.text.startswith('Fig. 1. System architecture'):
-            replace(p, re.sub(r'Fig\. (\d+)', lambda m: f'Fig. {int(m[1])+1}', p.text))
-        elif 'Figs. 1–3' in p.text:
-            replace(p, p.text.replace('Figs. 1–3', 'Figs. 2–4'))
-
-
-def iterations(doc: Doc, md: str) -> None:
-    heading = find(doc, 'Development iterations.')
-    table = make_table(doc, heading, md_rows(md, 'regression-tested (28 automated tests):'), doc.tables[0])
-    cursor = table._tbl.getnext()
-    while cursor is not None and cursor.tag == qn('w:p'):
-        p = Paragraph(cursor, doc._body)
-        if p.text.startswith('Limitations.'):
-            break
-        following = cursor.getnext()
-        cursor.getparent().remove(cursor)
-        cursor = following
-    p = find(doc, 'Limitations.')
-    item = clean_md(md_block(md, '1. **Perception is partly idealised.**', '2. **Static obstacles'))
-    rest = p.text[p.text.index(' (2)'):]
-    replace(p, 'Limitations. (1) Perception is partly idealised. ' + item + rest)
-    # Preserve the existing limitation paragraph and bold the requested first-item lead.
-    text = p.text
-    replace(p, text.split('Perception is partly idealised.')[0])
-    r = p.add_run('Perception is partly idealised.')
-    if p.runs[0]._r.rPr is not None:
-        r._r.insert(0, deepcopy(p.runs[0]._r.rPr))
-    r.bold = True
-    r = p.add_run(text.split('Perception is partly idealised.', 1)[1])
-    if p.runs[0]._r.rPr is not None:
-        r._r.insert(0, deepcopy(p.runs[0]._r.rPr))
-    remove(find(doc, '[After integration:'))
-
-
-def conclusion(doc: Doc, md: str) -> None:
-    block = md_block(md, '## VI. Conclusion & Future Work', 'Future work:')
-    text = clean_md(block.split('\n\n', 1)[1])
-    replace(find(doc, 'This project produced'), text)
 
 
 def expand(text: str) -> list[int]:
@@ -320,8 +254,89 @@ def validate(doc: Doc) -> None:
     assert sum(b.get(qn('r:embed')) in ids for b in doc._element.xpath('.//a:blip')) == 1
     assert not any(t.cell(0, 0).text.startswith('CARLA 0.9.16 SIMULATION') for t in doc.tables)
     assert 'Fig. X' not in text and '{HIM}' not in text
-    assert '[[Rerun with Adil\'s OpenCV lane module once integrated.]]' in text
-    assert any(len(t.rows) == 13 and t.cell(12, 0).text == '12' for t in doc.tables)
+    assert '194/200' in text and '17/18' in text
+    assert any(len(t.rows) == 22 and t.cell(21, 0).text == '21' for t in doc.tables)
+
+
+
+# Final implementation details are kept here so the incoming team documents stay immutable.
+C_TEXT = "C. Perception and Sensor Suite. Camera lane detection combines a local-contrast white mask, a yellow mask and curb edges with Canny [4] and Hough lines [5] in a wider region of interest. Boundary pairs are checked for vanishing point, centre and width consistency, then ranked using a lane-width prior. A median of accepted widths supports single-side fallback. A PD-style camera controller, using feedback control principles [9], uses offset and heading, a five-estimate median filter and a steering rate limit of 0.15 per update after warmup. Tuning used labelled CARLA frames with map-derived offset and heading: drives 0–1 were tuning data, while drive 2 was held out; controller state was reset per town/drive and frames were evaluated in tick order (Section V). LiDAR processing uses a map-shaped path corridor, range-bin road-height removal and a cluster check; adjacent-lane detection uses the neighbouring corridor. Core scenarios use a 32-channel, 70 m roof LiDAR. Moving-traffic scenarios use 64 channels and 185 m range, extending adjacent sensing to 180 m. Approximately 150 m of visible free lane is needed for an overtake against closing traffic; a 60–70 m view can become unsafe during the manoeuvre. Camera and LiDAR reads wait, with a bounded timeout, for the current simulation frame, avoiding braking based on stale sweeps."
+D_TEXT += " Obstacle speed is estimated from ego speed plus tracked gap change. FOLLOW adaptive cruise uses a 6 m standstill gap plus a 1.8 s time gap, with TTC braking below 3 s. A possibly moving obstacle cannot be overtaken even before motion confirmation. An adjacent lane is free only when nearest gap − closing speed·9 s >10 m; nearby traffic and unknown object speed block pull-out. Clearance must remain free for 1 s. If the target lane closes during a committed manoeuvre, ABORT brakes and returns behind the obstacle where clearance allows. Stronger low-speed steering and creep recovery support pull-out after waiting."
+G_TEXT = "Run A preserves the original 90-run ground-truth evaluation. Final Run B uses LiDAR obstacle and adjacent-lane detection with map-waypoint pure-pursuit steering [11] over 200 runs. Run C uses camera steering plus LiDAR for 18 core-scenario runs. A separate Town04 test adds 0.05 m LiDAR range noise. New curve scenarios accumulate 45–120° heading change. Moving scenarios include a slower lead vehicle, a lead braking at 3 m/s², and an oncoming car at 6–8 m/s. Success requires collision-free lane following, stopping with at least 2 m gap, or completed pass-and-return as appropriate. Lead braking additionally requires final speed below 0.2 m/s; oncoming overtakes must never move more than half a lane over while the oncoming vehicle approaches. Full criteria and coverage are given in Section V."
+
+
+def final_sections(doc: Doc, md: str) -> None:
+    start, end = find(doc, 'V. FINDINGS'), find(doc, 'REFERENCES')
+    h1 = deepcopy(start._p)
+    h2 = deepcopy(find(doc, 'A. Test Setup')._p)
+    body = deepcopy(find(doc, 'Every tick was logged')._p)
+    caption = deepcopy(next(p for p in doc.paragraphs if p.text == 'TABLE I')._p)
+    template = deepcopy(doc.tables[0])
+    cursor = start._p.getnext()
+    while cursor is not end._p:
+        following = cursor.getnext()
+        # Preserve any layout section break rather than silently dropping it.
+        if cursor.xpath('.//w:sectPr'):
+            raise AssertionError('Unexpected section break inside results')
+        cursor.getparent().remove(cursor)
+        cursor = following
+    anchor = start._p
+    def paragraph(text, model=body):
+        nonlocal anchor
+        element = deepcopy(model)
+        anchor.addnext(element)
+        p = Paragraph(element, doc._body)
+        replace(p, clean_md(text))
+        anchor = element
+        return p
+    block = md.split('## V.', 1)[1].split('## References', 1)[0]
+    block = block.split('\n', 1)[1]
+    chunks = re.split(r'\n\s*\n', block)
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk or chunk == '---':
+            continue
+        if chunk.startswith('### '):
+            paragraph(chunk[4:], h2)
+        elif chunk.startswith('## VI.'):
+            paragraph('VI. CONCLUSION AND FUTURE WORK', h1)
+        elif chunk.startswith('**Table '):
+            label, title = clean_md(chunk).split(' – ', 1)
+            paragraph(label.upper(), caption)
+            paragraph(title.upper(), caption)
+        elif chunk.startswith('|'):
+            rows = [[clean_md(c) for c in l.strip().strip('|').split('|')]
+                    for l in chunk.splitlines() if l.startswith('|') and not re.match(r'\|[-| :]+\|$', l)]
+            p = Paragraph(anchor, doc._body)
+            t = make_table(doc, p, rows, template)
+            t.autofit = False
+            count = len(rows[0])
+            widths = ([0.76] + [(3.4-0.76)/(count-1)]*(count-1)) if count > 1 else [3.4]
+            for col, width in zip(t.columns, widths):
+                col.width = Inches(width)
+            header = OxmlElement('w:tblHeader')
+            t.rows[0]._tr.get_or_add_trPr().append(header)
+            for row in t.rows:
+                for cell, width in zip(row.cells, widths):
+                    cell.width = Inches(width)
+                    for cp in cell.paragraphs:
+                        cp.paragraph_format.space_after = Pt(1)
+                        cp.paragraph_format.space_before = Pt(0)
+                        for run in cp.runs:
+                            run.font.size = Pt(6 if count >= 8 else 7)
+                            run.text = run.text.replace('_', '_\u200b')
+            t._tbl.tblPr.find(qn('w:tblW')).set(qn('w:w'), str(int(3.4*1440)))
+            t._tbl.tblPr.find(qn('w:tblW')).set(qn('w:type'), 'dxa')
+            anchor = t._tbl
+        elif chunk.startswith('*Fig. '):
+            match = re.match(r'\*Fig\. (\d+) – (figures/[^:]+): (.*)\*', chunk)
+            assert match, chunk
+            p = paragraph('')
+            p.alignment = 1
+            p.add_run().add_picture(str(ROOT / match[2]), width=Inches(3.4))
+            paragraph(f'Fig. {match[1]}. {match[3]}', caption)
+        else:
+            paragraph(chunk)
 
 
 def main() -> None:
@@ -332,10 +347,7 @@ def main() -> None:
     methodology(doc)
     update_method_text(doc)
     literature(doc)
-    perception(doc, md)
-    results(doc, md)
-    iterations(doc, md)
-    conclusion(doc, md)
+    final_sections(doc, md)
     mapping = references(doc)
     validate(doc)
     assert original_sections == [s._sectPr.xml for s in doc.sections]
