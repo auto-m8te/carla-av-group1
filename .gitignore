@@ -1,0 +1,20 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Large or generated files (GitHub limit 100 MB) — demo video goes in a Release
+*.mp4
+*.zip
+
+# Scratch runs
+carla_av/results_lidar_check/
+carla_av/results_demo/
+
+# Not part of this project (other course material, chat exports, board screenshots)
+The Meanings of AI*
+The_Meanings_of_AI*
+WhatsApp*
+Screenshot*
+Sprint 1 ss/

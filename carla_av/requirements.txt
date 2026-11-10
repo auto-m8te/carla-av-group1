@@ -1,0 +1,4 @@
+carla==0.9.16  # must match CARLA server version; Python 3.10-3.12
+numpy
+matplotlib
+pytest
