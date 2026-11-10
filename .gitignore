@@ -21,3 +21,6 @@ Sprint 1 ss/
 .eval_lidar.lock/
 carla_av/.pytest-tmp*/
 *.partial
+carla_av/.pytest_cache_*/
+carla_av/.pytest_tmp_*/
+.pytest-tmp*/
