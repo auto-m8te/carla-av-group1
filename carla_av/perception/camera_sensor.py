@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import queue
+
+from perception.sensor_sync import current_frame, wait_for_frame
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +29,7 @@ class CameraLaneModule:
         self.debug_dir = Path(debug_dir) if debug_dir is not None else None
         self.debug_every, self._ticks = debug_every, 0
         self._queue: queue.Queue[carla.Image] = queue.Queue()
+        self._world = world
         self._destroyed = False
         bp = world.get_blueprint_library().find("sensor.camera.rgb")
         for key, value in (("image_size_x", cfg.width), ("image_size_y", cfg.height),
@@ -37,12 +40,7 @@ class CameraLaneModule:
         self.sensor.listen(self._queue.put)
 
     def _refresh(self) -> Optional[np.ndarray]:
-        measurement = None
-        while True:
-            try:
-                measurement = self._queue.get_nowait()
-            except queue.Empty:
-                break
+        measurement = wait_for_frame(self._queue, current_frame(self._world))
         if measurement is None:
             return None
         return np.frombuffer(measurement.raw_data, dtype=np.uint8).reshape(

@@ -67,3 +67,19 @@ def test_debounce_uses_elapsed_time_and_configurable_hold():
     assert debounce.update(True, 0.2)
     assert not debounce.update(False, 0.1)
     assert Debounce(0).update(True, 0.05)
+
+
+def test_wait_for_frame_waits_for_the_current_frame_and_keeps_the_newest():
+    import queue
+    import threading
+    from types import SimpleNamespace
+
+    from perception.sensor_sync import wait_for_frame
+
+    q = queue.Queue()
+    q.put(SimpleNamespace(frame=8))
+    threading.Timer(0.05, lambda: q.put(SimpleNamespace(frame=10))).start()
+    assert wait_for_frame(q, 10, timeout_s=1.0).frame == 10   # waited for the late sweep
+    q.put(SimpleNamespace(frame=11))
+    assert wait_for_frame(q, 99, timeout_s=0.05).frame == 11  # timeout -> newest available
+    assert wait_for_frame(q, 1, timeout_s=0.01) is None       # nothing new at all

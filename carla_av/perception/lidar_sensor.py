@@ -32,6 +32,7 @@ import numpy as np
 from avoidance.carla_adapter import ADJ_LANE_CHECK_BACK, lane_path, lane_path_ahead
 from avoidance.collision_avoidance import AvoidanceConfig
 from perception.tracking import GapTracker, lane_free_for_manoeuvre
+from perception.sensor_sync import current_frame, wait_for_frame
 from perception.obstacle_detection import (
     CLEAR, Detection, LidarDetectionConfig, detect_obstacle, lane_occupied_points,
     nearest_occupied_ahead,
@@ -82,7 +83,8 @@ class LidarObstacleDetector:
         self.mount = mount
         self.vehicle = vehicle
         self.last_detection: Detection = CLEAR
-        self._points: Optional[np.ndarray] = None   # latest sweep, vehicle frame
+        self._points: Optional[np.ndarray] = None
+        self._points_frame: int = -2   # frame of the sweep in self._points   # latest sweep, vehicle frame
         self._tags: Optional[np.ndarray] = None
         self._adj_tag: Optional[str] = None
         self._queue: "queue.Queue[carla.LidarMeasurement]" = queue.Queue()
@@ -112,21 +114,29 @@ class LidarObstacleDetector:
         return bp
 
     def _refresh(self) -> bool:
-        """Pull the newest sweep (if any) into self._points. True if a new one arrived."""
+        """Pull the newest sweep (if any) into self._points. True if a new one arrived.
+
+        Both checks (in-path distance, adjacent lane) call this every tick; once this
+        frame's sweep has been read, the second call must not wait for another one."""
+        frame = current_frame(self.world)
+        if frame >= 0 and frame == self._points_frame:
+            return False
         pts = self._latest_points()
+        self._points_frame = frame
         if pts is None:
             return False
         self._points = pts
         return True
 
     def _latest_points(self) -> Optional[np.ndarray]:
-        """Most recent sweep as (N, 3) vehicle-frame points; older sweeps are dropped."""
-        measurement = None
-        while True:
-            try:
-                measurement = self._queue.get_nowait()
-            except queue.Empty:
-                break
+        """Sweep of the CURRENT simulation frame as (N, 3) vehicle-frame points.
+
+        In synchronous mode sensor data arrives shortly AFTER world.tick() returns. Reading
+        only what is already queued returned sweeps several frames old whenever the
+        simulator was loaded (e.g. with the camera running), which delayed braking. So we
+        wait (bounded) for the sweep whose frame matches the world's current frame.
+        """
+        measurement = wait_for_frame(self._queue, current_frame(self.world))
         if measurement is None:
             return None
         if self.mount.semantic:
