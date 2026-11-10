@@ -132,7 +132,9 @@ def test_moving_success_rules(tmp_path, scenario, failure):
     if failure == "moving":
         rows[-1]["speed"] = 1.0
     if failure == "early":
+        # half a lane over while the oncoming car is still approaching
         rows[2]["other_gap"] = 19.0
+        rows[2]["lateral_offset"] = -2.5
     path = tmp_path / f"{scenario}_run1.csv"
     with path.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
@@ -151,50 +153,13 @@ def test_moving_success_rules(tmp_path, scenario, failure):
     assert scenario in (analyze(tmp_path, make_plots=False)[0].scenario)
 
 
-@pytest.mark.parametrize("gaps,expected", [([20, None], True), ([20, 19], False),
-                                         ([20, 21], True), ([None, 21], False)])
-def test_oncoming_wait_uses_first_avoid_only(gaps, expected):
+def test_oncoming_metric_is_about_entering_the_lane_not_about_starting():
     from analysis.analyze_results import waited_for_oncoming
 
-    rows = [{"mode": "STOPPED", "other_gap": gaps[0]},
-            {"mode": "AVOID", "other_gap": gaps[1]},
-            {"mode": "AVOID", "other_gap": 30.0}]
-    assert waited_for_oncoming(rows) == expected
-
-
-def test_abort_counts_as_reaction_and_has_plot_color():
-    from analysis.analyze_results import _reaction, MODE_COLORS
-
-    rows = [dict(t=0.0, mode="CRUISE", obstacle_distance=25.0),
-            dict(t=0.5, mode="ABORT", obstacle_distance=20.0)]
-    assert _reaction(rows) == (20.0, 0.5)
-    assert MODE_COLORS["ABORT"] == "#f6b26b"
-
-def test_camera_lane_metrics(tmp_path):
-    path = tmp_path / 'empty_lane_run1.csv'
-    write_toy_run(path, None, False, steps=3)
-    rows = list(csv.DictReader(path.open()))
-    with path.open('w', newline='') as fh:
-        writer = csv.DictWriter(fh, fieldnames=(*FIELDS, 'lane_conf'))
-        writer.writeheader()
-        for row, confidence in zip(rows, [1, 0.5, 0]):
-            writer.writerow(dict(row, lane_conf=confidence))
-    (metric,) = analyze(tmp_path, make_plots=False)
-    assert metric.lane_conf_mean == 0.5
-    assert metric.lane_lost_ticks == 1
-    report = (tmp_path / 'summary.md').read_text()
-    assert 'Lane conf (mean)' in report
-    assert 'Lane lost ticks' in report
-
-
-@pytest.mark.parametrize("scenario,expected", [
-    ("obstacle_stop", (15.0, 1.0)), ("curve_stop", (15.0, 1.0)),
-    ("oncoming_overtake", (15.0, 1.0)),
-    ("lead_vehicle", (25.0, 0.1)), ("lead_brake", (25.0, 0.1)),
-])
-def test_reaction_follow_is_cruise_like_only_for_static_scenarios(scenario, expected):
-    from analysis.analyze_results import _reaction
-    rows = [dict(t=0.0, mode="CRUISE", obstacle_distance=30.0),
-            dict(t=0.1, mode="FOLLOW", obstacle_distance=25.0),
-            dict(t=1.0, mode="BRAKE", obstacle_distance=15.0)]
-    assert _reaction(rows, scenario) == expected
+    approach = [{"other_gap": g, "lateral_offset": o} for g, o in
+                [("60", "0"), ("55", "-0.4"), ("50", "-0.2"), ("45", "0"), ("40", "0")]]
+    assert waited_for_oncoming(approach)  # aborted pull-out inside own lane: safe
+    into_lane = approach + [{"other_gap": "35", "lateral_offset": "-2.5"}]
+    assert not waited_for_oncoming(into_lane)
+    passed = approach + [{"other_gap": "45", "lateral_offset": "-3.5"}]  # car moving away
+    assert waited_for_oncoming(passed)

@@ -1,0 +1,42 @@
+INFO Town05_Opt empty_lane run 1: obstacle 41 m, 8.5 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt empty_lane run 2: obstacle 37 m, 10.0 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt empty_lane run 3: obstacle 53 m, 7.4 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt empty_lane run 4: obstacle 41 m, 9.2 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt empty_lane run 5: obstacle 43 m, 6.0 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_stop run 1: obstacle 43 m, 7.2 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_stop run 2: obstacle 53 m, 9.2 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_stop run 3: obstacle 55 m, 9.0 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_stop run 4: obstacle 40 m, 6.3 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_stop run 5: obstacle 46 m, 8.8 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_avoid run 1: obstacle 40 m, 8.7 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_avoid run 2: obstacle 37 m, 9.5 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_avoid run 3: obstacle 55 m, 9.2 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_avoid run 4: obstacle 50 m, 7.6 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt obstacle_avoid run 5: obstacle 54 m, 7.5 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt curve_lane run 1: obstacle 54 m, 7.3 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt curve_lane run 2: obstacle 46 m, 8.7 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt curve_lane run 3: obstacle 49 m, 6.1 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt curve_lane run 4: obstacle 38 m, 8.6 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt curve_lane run 5: obstacle 46 m, 9.4 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt curve_stop run 1: obstacle 55 m, 9.1 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt curve_stop run 2: obstacle 40 m, 8.2 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt curve_stop run 3: obstacle 40 m, 6.8 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt curve_stop run 4: obstacle 40 m, 7.0 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt curve_stop run 5: obstacle 40 m, 7.0 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_vehicle run 1: obstacle 36 m, 7.4 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_vehicle run 2: obstacle 39 m, 8.7 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_vehicle run 3: obstacle 37 m, 8.1 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_vehicle run 4: obstacle 36 m, 7.8 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_vehicle run 5: obstacle 37 m, 8.8 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_brake run 1: obstacle 33 m, 8.4 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_brake run 2: obstacle 35 m, 6.9 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_brake run 3: obstacle 38 m, 7.9 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_brake run 4: obstacle 39 m, 8.6 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt lead_brake run 5: obstacle 39 m, 6.7 m/s, lane 3.50 m -> collision=False
+WARNING Town05_Opt: no usable oncoming lane for oncoming_overtake; skipping run 1
+WARNING Town05_Opt: no usable oncoming lane for oncoming_overtake; skipping run 2
+WARNING Town05_Opt: no usable oncoming lane for oncoming_overtake; skipping run 3
+WARNING Town05_Opt: no usable oncoming lane for oncoming_overtake; skipping run 4
+WARNING Town05_Opt: no usable oncoming lane for oncoming_overtake; skipping run 5
+INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD_Opt.bin 
+INFO:  Found the required file in cache!  Carla/Maps/Nav/Town05_Opt.bin 

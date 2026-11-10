@@ -344,3 +344,11 @@ def test_motion_confirmation_resets(gap, speed):
     for _ in range(8):
         assert ctrl.step(perceive(obstacle_distance=60.0, obstacle_speed=4.0,
                                  distance_travelled=4.0)).mode == Mode.CRUISE
+
+
+def test_never_overtakes_an_obstacle_that_may_be_moving():
+    # CARLA lead_vehicle: lead pulling away at 1.9 m/s, not yet confirmed as moving.
+    state = AvoidanceState(mode=Mode.CRUISE)
+    _, cmd = decide(state, perceive(obstacle_distance=24.8, speed=8.0, adjacent_lane_clear=True,
+                                    obstacle_speed=1.9, distance_travelled=10.0), CFG)
+    assert cmd.mode != Mode.AVOID

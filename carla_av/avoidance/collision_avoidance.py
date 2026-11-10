@@ -361,7 +361,11 @@ def _road_step(
     avoid_trigger = d_stop + p.speed * cfg.lane_change_time + cfg.avoid_lookahead
     if mode in braking_modes:
         avoid_trigger = max(avoid_trigger, hold_zone)  # stopped car may pull out
-    if dist <= avoid_trigger and p.adjacent_lane_clear:
+    # Never start an overtake past something that may be moving (even before it is
+    # confirmed as moving): the passing logic assumes the obstacle stays put, and a
+    # lead pulling away would be cut off on the merge back (CARLA lead_vehicle run).
+    possibly_moving = p.obstacle_speed is not None and p.obstacle_speed > cfg.moving_speed
+    if dist <= avoid_trigger and p.adjacent_lane_clear and not possibly_moving:
         obstacle_odometer = p.distance_travelled + dist
         new_state = AvoidanceState(mode=Mode.AVOID, obstacle_odometer=obstacle_odometer)
         steer = _steer_to_offset(target_offset, p, cfg, pullout=True)

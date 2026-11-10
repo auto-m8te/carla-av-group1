@@ -94,17 +94,21 @@ def perception_error(rows: list[dict]) -> tuple[Optional[float], int, int]:
     return (mean(both) if both else None), missed, false
 
 
-def waited_for_oncoming(rows: list[dict]) -> bool:
-    """At first pull-out, the scripted car must be absent or moving away."""
-    for index, row in enumerate(rows):
-        if row["mode"] != "AVOID":
-            continue
+def waited_for_oncoming(rows: list[dict], half_lane: float = 1.75) -> bool:
+    """Never more than half a lane over while the oncoming car is still ahead.
+
+    The oncoming car is "ahead" while its gap is shrinking (it approaches us); an
+    overtake that is started and aborted while still in our own lane is safe.
+    """
+    previous = None
+    for row in rows:
         gap = row.get("other_gap")
-        if gap in (None, ""):
-            return True
-        previous = rows[index - 1].get("other_gap") if index else None
-        return previous not in (None, "") and float(gap) > float(previous)
-    return False
+        gap = float(gap) if gap not in (None, "") else None
+        approaching = gap is not None and previous is not None and gap < previous
+        if approaching and abs(float(row["lateral_offset"])) > half_lane:
+            return False
+        previous = gap
+    return True
 
 
 def _successful(scenario: str, rows: list[dict], min_gap: Optional[float],
