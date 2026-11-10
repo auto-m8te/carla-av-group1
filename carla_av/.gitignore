@@ -1,0 +1,3 @@
+# Small, versioned lane regression fixtures override the parent data/ rule.
+!tests/data/
+!tests/data/**

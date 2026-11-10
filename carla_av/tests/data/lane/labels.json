@@ -1,0 +1,20 @@
+[
+  {
+    "file": "Town01_0_00150.png",
+    "town": "Town01",
+    "offset_m": 0.28236389797122396,
+    "heading_rad": 0.03355156867725428
+  },
+  {
+    "file": "Town03_Opt_0_00042.png",
+    "town": "Town03_Opt",
+    "offset_m": 0.267922045824605,
+    "heading_rad": 0.029946980141832027
+  },
+  {
+    "file": "Town04_0_00090.png",
+    "town": "Town04",
+    "offset_m": -0.2812859929512115,
+    "heading_rad": -0.03579155347011984
+  }
+]
