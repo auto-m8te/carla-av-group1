@@ -31,7 +31,7 @@ import numpy as np
 
 from avoidance.carla_adapter import ADJ_LANE_CHECK_AHEAD, ADJ_LANE_CHECK_BACK, lane_path, lane_path_ahead
 from perception.obstacle_detection import (
-    CLEAR, Detection, LidarDetectionConfig, detect_obstacle, lane_occupied,
+    CLEAR, Detection, LidarDetectionConfig, detect_obstacle, lane_occupied, lane_occupied_points,
 )
 
 log = logging.getLogger("lidar")
@@ -50,6 +50,7 @@ class LidarMount:
     upper_fov: float = 2.0
     lower_fov: float = -24.0
     noise_stddev: float = 0.0
+    semantic: bool = False
 
 
 class LidarObstacleDetector:
@@ -74,6 +75,8 @@ class LidarObstacleDetector:
         self.vehicle = vehicle
         self.last_detection: Detection = CLEAR
         self._points: Optional[np.ndarray] = None   # latest sweep, vehicle frame
+        self._tags: Optional[np.ndarray] = None
+        self._adj_tag: Optional[str] = None
         self._queue: "queue.Queue[carla.LidarMeasurement]" = queue.Queue()
         self.sensor = world.spawn_actor(
             self._blueprint(world, 1.0 / (world.get_settings().fixed_delta_seconds or 0.05)),
@@ -83,17 +86,21 @@ class LidarObstacleDetector:
         self.sensor.listen(self._queue.put)
 
     def _blueprint(self, world: carla.World, rotation_hz: float) -> carla.ActorBlueprint:
-        bp = world.get_blueprint_library().find("sensor.lidar.ray_cast")
         m = self.mount
+        name = "sensor.lidar.ray_cast_semantic" if m.semantic else "sensor.lidar.ray_cast"
+        bp = world.get_blueprint_library().find(name)
         for key, value in (
             ("channels", m.channels), ("range", m.range), ("points_per_second", m.points_per_second),
             ("rotation_frequency", rotation_hz),  # one full sweep per simulation tick
             ("upper_fov", m.upper_fov), ("lower_fov", m.lower_fov),
-            ("noise_stddev", m.noise_stddev),
-            ("dropoff_general_rate", 0.0), ("dropoff_intensity_limit", 1.0),
-            ("dropoff_zero_intensity", 0.0),
         ):
             bp.set_attribute(key, str(value))
+        if not m.semantic:
+            for key, value in (
+                ("noise_stddev", m.noise_stddev), ("dropoff_general_rate", 0.0),
+                ("dropoff_intensity_limit", 1.0), ("dropoff_zero_intensity", 0.0),
+            ):
+                bp.set_attribute(key, str(value))
         return bp
 
     def _refresh(self) -> bool:
@@ -114,8 +121,18 @@ class LidarObstacleDetector:
                 break
         if measurement is None:
             return None
-        raw = np.frombuffer(measurement.raw_data, dtype=np.float32).reshape(-1, 4)
-        pts = raw[:, :3].astype(float)
+        if self.mount.semantic:
+            dtype = np.dtype([(name, kind) for name, kind in (
+                ("x", "f4"), ("y", "f4"), ("z", "f4"),
+                ("cos", "f4"), ("idx", "u4"), ("tag", "u4"),
+            )])
+            raw = np.frombuffer(measurement.raw_data, dtype=dtype)
+            pts = np.column_stack([raw[axis] for axis in ("x", "y", "z")]).astype(float)
+            self._tags = raw["tag"].copy()
+        else:
+            raw = np.frombuffer(measurement.raw_data, dtype=np.float32).reshape(-1, 4)
+            pts = raw[:, :3].astype(float)
+            self._tags = None
         pts[:, 0] += self.mount.x   # sensor frame -> vehicle frame (sensor is not rotated)
         pts[:, 2] += self.mount.z
         return pts
@@ -150,6 +167,7 @@ class LidarObstacleDetector:
         """Plug-in for CarlaAvoidanceBridge: is the lane `target_offset` metres beside
         the home lane free from ADJ_LANE_CHECK_BACK behind to ADJ_LANE_CHECK_AHEAD ahead?
         No sweep yet -> not clear (never swerve blind)."""
+        self._adj_tag = None
         self._refresh()
         if self._points is None:
             return False
@@ -157,8 +175,24 @@ class LidarObstacleDetector:
                                     ahead=ADJ_LANE_CHECK_AHEAD, behind=ADJ_LANE_CHECK_BACK))
         if len(path) < 2:
             return False
+        if self._tags is not None:
+            mask = lane_occupied_points(self._points, self.config, path, lane_width,
+                                        behind=ADJ_LANE_CHECK_BACK, ahead=ADJ_LANE_CHECK_AHEAD)
+            if mask.any():
+                self._adj_tag = "+".join(str(int(tag)) for tag in np.unique(self._tags[mask]))
+            return not bool(mask.any())
         return not lane_occupied(self._points, self.config, path, lane_width,
                                  behind=ADJ_LANE_CHECK_BACK, ahead=ADJ_LANE_CHECK_AHEAD)
+
+    def debug_tags(self) -> tuple[Optional[int], Optional[str]]:
+        """Semantic tags for the nearest detection and last adjacent-lane check."""
+        tag = None
+        point = self.last_detection.nearest_point
+        if self._tags is not None and self._points is not None and point is not None:
+            matches = np.flatnonzero(np.all(np.abs(self._points - point) <= 1e-6, axis=1))
+            if matches.size:
+                tag = int(self._tags[matches[0]])
+        return tag, self._adj_tag
 
     def nearest_point_world(self) -> Optional[carla.Location]:
         """World location of the accepted detection (for debug drawing)."""
@@ -168,6 +202,18 @@ class LidarObstacleDetector:
         return self.vehicle.get_transform().transform(carla.Location(x=p[0], y=p[1], z=p[2]))
 
     def destroy(self) -> None:
-        if self.sensor.is_alive:
+        """Stop and destroy for standalone use; safe to call repeatedly.
+
+        The scenario runner instead stops, flushes and destroys this sensor via batch.
+        """
+        try:
+            if not self.sensor.is_alive:
+                return
             self.sensor.stop()
-            self.sensor.destroy()
+        except RuntimeError as exc:
+            log.warning("Could not stop LiDAR sensor: %s", exc)
+        try:
+            if self.sensor.is_alive:
+                self.sensor.destroy()
+        except RuntimeError as exc:
+            log.warning("Could not destroy LiDAR sensor: %s", exc)

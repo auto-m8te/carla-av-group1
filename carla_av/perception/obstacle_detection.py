@@ -56,6 +56,7 @@ class Detection:
 
 
 CLEAR = Detection(ahead=False, distance=None)
+PATH_END_MARGIN = 1.0  # m the band may extend past the first/last path point
 
 
 def _grade_limited(bin_min: np.ndarray, start: int, step: int, max_step: float,
@@ -116,31 +117,38 @@ def _as_points(points: np.ndarray) -> np.ndarray:
 def _band_clusters(
     pts: np.ndarray, cfg: LidarDetectionConfig, half_width: float, x_min: float,
     x_max: float, curvature: float, path: Optional[np.ndarray],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Obstacle points inside the band, sorted by x, plus cluster sizes.
 
-    Returns (cx, cy, cz, counts, hits): counts[i] = points within cluster_depth ahead of
+    Returns (cx, cy, cz, counts, hits, indices): indices map back to input points; counts[i] = points within cluster_depth ahead of
     point i; hits = indices whose cluster is big enough, nearest first.
     """
     empty = np.empty(0)
+    if path is not None and len(path) >= 2:
+        # Only look as far as the path reaches: where the road turns away, the
+        # straight-ahead continuation is buildings/trees, not our lane.
+        px = np.asarray(path, dtype=float)[:, 0]
+        x_min = max(x_min, float(px.min()) - PATH_END_MARGIN)
+        x_max = min(x_max, float(px.max()) + PATH_END_MARGIN)
     x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
     own_body = ((np.abs(x) < cfg.ego_half_length + cfg.ego_body_margin)
                 & (np.abs(y) < cfg.ego_half_width + cfg.ego_body_margin))
     keep = (x > x_min) & (x < x_max) & ~own_body
     if not keep.any():
-        return empty, empty, empty, empty, empty.astype(int)
+        return empty, empty, empty, empty, empty.astype(int), empty.astype(int)
     x, y, z = x[keep], y[keep], z[keep]
 
     lateral = np.abs(y - _band_centre(x, curvature, path))
     height = z - _road_height(x, z, lateral < half_width + cfg.ground_lateral, x_min, x_max, cfg)
     mask = (height > cfg.min_height) & (height < cfg.max_height) & (lateral < half_width)
     if not mask.any():
-        return empty, empty, empty, empty, empty.astype(int)
+        return empty, empty, empty, empty, empty.astype(int), empty.astype(int)
 
     order = np.argsort(x[mask])
     cx, cy, cz = x[mask][order], y[mask][order], z[mask][order]
     counts = np.searchsorted(cx, cx + cfg.cluster_depth, side="right") - np.arange(cx.size)
-    return cx, cy, cz, counts, np.flatnonzero(counts >= cfg.min_points)
+    indices = np.flatnonzero(keep)[mask][order]
+    return cx, cy, cz, counts, np.flatnonzero(counts >= cfg.min_points), indices
 
 
 def detect_obstacle(
@@ -159,7 +167,7 @@ def detect_obstacle(
     pts = _as_points(points)
     if pts.shape[0] == 0:
         return CLEAR
-    cx, cy, cz, counts, hits = _band_clusters(
+    cx, cy, cz, counts, hits, _ = _band_clusters(
         pts, cfg, cfg.ego_half_width + cfg.path_margin,
         cfg.ego_half_length, cfg.ego_half_length + cfg.max_range, curvature, path,
     )
@@ -189,8 +197,29 @@ def lane_occupied(
     Checks from `behind` metres behind the car centre to `ahead` metres in front, over
     the full lane width (an overtake needs the whole lane, not just our car's width).
     """
+    return bool(lane_occupied_points(points, cfg, lane_path, lane_width, behind, ahead).any())
+
+
+def lane_occupied_points(
+    points: np.ndarray,
+    cfg: LidarDetectionConfig,
+    lane_path: np.ndarray,
+    lane_width: float,
+    behind: float = 15.0,
+    ahead: float = 60.0,
+) -> np.ndarray:
+    """Boolean mask over input points belonging to accepted lane-band clusters."""
     pts = _as_points(points)
-    if pts.shape[0] == 0:
-        return False
-    *_, hits = _band_clusters(pts, cfg, lane_width / 2.0, -behind, ahead, 0.0, lane_path)
-    return bool(hits.size)
+    mask = np.zeros(len(pts), dtype=bool)
+    cx, _, _, _, hits, indices = _band_clusters(
+        pts, cfg, lane_width / 2.0, -behind, ahead, 0.0, lane_path,
+    )
+    if hits.size:
+        # Count interval coverage without allocating a points-by-clusters matrix.
+        coverage = np.zeros(cx.size + 1, dtype=int)
+        starts = np.searchsorted(cx, cx[hits], side="left")
+        ends = np.searchsorted(cx, cx[hits] + cfg.cluster_depth, side="right")
+        np.add.at(coverage, starts, 1)
+        np.add.at(coverage, ends, -1)
+        mask[indices] = np.cumsum(coverage[:-1]) > 0
+    return mask

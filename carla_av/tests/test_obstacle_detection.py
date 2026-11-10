@@ -138,7 +138,7 @@ def test_low_terrain_beside_elevated_road_does_not_lift_the_road():
 
 # ---- adjacent-lane occupancy (is the lane we would swerve into free?) ----
 
-from perception.obstacle_detection import lane_occupied  # noqa: E402
+from perception.obstacle_detection import lane_occupied, lane_occupied_points  # noqa: E402
 
 LEFT_LANE = np.array([[-20.0, -3.5], [65.0, -3.5]])   # centreline of the lane to our left
 
@@ -174,3 +174,36 @@ def test_own_car_body_is_never_counted():
     body = np.column_stack([np.linspace(-2.0, 2.0, 30), np.full(30, -0.9), np.full(30, 1.2)])
     cloud = np.vstack([ground(), body])
     assert not lane_occupied(cloud, CFG, halfway, lane_width=3.5)
+
+
+def test_empty_lane_occupied_points_mask() -> None:
+    cloud = ground()
+    mask = lane_occupied_points(cloud, CFG, LEFT_LANE, lane_width=3.5)
+    assert mask.dtype == np.bool_
+    assert mask.shape == (len(cloud),)
+    assert not mask.any()
+
+
+def test_parked_car_lane_occupied_points_excludes_ground() -> None:
+    road = ground()
+    car = box(40.0, -3.5)
+    cloud = np.vstack([road, car])
+    mask = lane_occupied_points(cloud, CFG, LEFT_LANE, lane_width=3.5)
+    assert mask.shape == (len(cloud),)
+    assert not mask[:len(road)].any()
+    assert mask[len(road):].any()
+    assert not mask[len(road):].all()
+
+
+def test_nothing_beyond_the_end_of_the_path_is_an_obstacle():
+    # Road turns at 30 m: the path stops there. A tree straight ahead at 45 m
+    # (where the road no longer goes) must not count.
+    path = np.array([[0.0, 0.0], [15.0, 0.0], [30.0, 0.0]])
+    tree = box(45.0, 0.0, length=1.0, width=1.0, height=2.0)
+    assert not detect_obstacle(np.vstack([ground(), tree]), CFG, path=path).ahead
+
+
+def test_adjacent_check_stops_at_the_end_of_the_lane_path():
+    short_left = np.array([[-20.0, -3.5], [30.0, -3.5]])
+    building = box(45.0, -3.5, length=5.0, width=3.0, height=2.4)
+    assert not lane_occupied(np.vstack([ground(), building]), CFG, short_left, lane_width=3.5)

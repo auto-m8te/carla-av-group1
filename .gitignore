@@ -18,3 +18,6 @@ The_Meanings_of_AI*
 WhatsApp*
 Screenshot*
 Sprint 1 ss/
+.eval_lidar.lock/
+carla_av/.pytest-tmp*/
+*.partial

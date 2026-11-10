@@ -30,7 +30,7 @@ import carla
 
 from avoidance.carla_adapter import CarlaAvoidanceBridge, ObstacleFn, ground_truth_obstacle_distance
 from avoidance.collision_avoidance import AvoidanceConfig, CollisionAvoidance, Mode
-from perception.lidar_sensor import LidarObstacleDetector
+from perception.lidar_sensor import LidarMount, LidarObstacleDetector
 
 log = logging.getLogger("scenarios")
 
@@ -51,6 +51,7 @@ CSV_FIELDS = (
     "adjacent_lane_clear", "throttle", "steer", "brake", "odometer", "collision",
     "gt_obstacle_distance",     # ground truth, logged alongside to measure perception error
     "gt_adjacent_lane_clear",
+    "det_tag", "adj_tag",
 )
 PERCEPTION_SOURCES = ("groundtruth", "lidar")
 
@@ -66,6 +67,7 @@ class RunParams:
     hud: bool = False        # draw controller mode / speed / gap above the car
     obstacle_source: str = "groundtruth"  # "lidar" = Abir's LiDAR module (E3)
     adjacent_source: str = "groundtruth"  # "lidar" = adjacent-lane check from LiDAR too
+    lidar_debug: bool = False
 
 
 def _adjacent(wp: carla.Waypoint, side: int) -> Optional[carla.Waypoint]:
@@ -191,7 +193,8 @@ def draw_detection(world: carla.World, detector: Optional[LidarObstacleDetector]
 
 def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                   gt_fn: ObstacleFn, detector: Optional[LidarObstacleDetector] = None) -> None:
-    with out.open("w", newline="") as fh:
+    partial = out.with_suffix(".partial")  # renamed only when the run ends normally
+    with partial.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         writer.writeheader()
         t, stopped_for = 0.0, 0.0
@@ -215,10 +218,13 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                     if params.adjacent_source == "lidar" else p.adjacent_lane_clear
                 ),
             )
+            row["det_tag"], row["adj_tag"] = (
+                detector.debug_tags() if detector is not None and params.lidar_debug else ("", "")
+            )
             writer.writerow(row)
             stopped_for = stopped_for + FIXED_DT if cmd.mode == Mode.STOPPED else 0.0
             if is_finished(params.scenario, row, stopped_for, p.distance_travelled - params.obstacle_m):
-                return
+                break
             follow_camera(world, ego)
             if params.hud:
                 draw_hud(world, ego, cmd.mode, p.speed, p.obstacle_distance)
@@ -227,6 +233,52 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
             t += FIXED_DT
             if params.realtime:
                 time.sleep(max(0.0, FIXED_DT - (time.perf_counter() - tick_start)))
+    partial.replace(out)
+
+
+def _teardown(client: carla.Client, world: carla.World, settings: carla.WorldSettings,
+              actors: list[carla.Actor]) -> None:
+    """Flush stopped sensors and batch destruction before leaving synchronous mode."""
+    sensors: list[carla.Actor] = []
+    others: list[carla.Actor] = []
+    for actor in actors:
+        try:
+            if actor.type_id.startswith("sensor."):
+                sensors.append(actor)
+                if actor.is_alive:
+                    actor.stop()
+            else:
+                others.append(actor)
+        except Exception as exc:
+            log.warning("Could not stop or classify actor during teardown: %s", exc)
+
+    for _ in range(2):
+        _teardown_tick(world)
+    try:
+        responses = client.apply_batch_sync(
+            [carla.command.DestroyActor(actor) for actor in sensors + others], True,
+        )
+        for response in responses:
+            if response.error:
+                log.warning("Could not destroy actor during teardown: %s", response.error)
+    except Exception as exc:
+        log.warning("Could not batch destroy actors during teardown: %s", exc)
+    _teardown_tick(world)
+    try:
+        settings.synchronous_mode, settings.fixed_delta_seconds = False, None
+        world.apply_settings(settings)
+    except Exception as exc:
+        log.warning("Could not restore asynchronous mode during teardown: %s", exc)
+
+
+def _teardown_tick(world: carla.World) -> None:
+    """Allow cleanup to continue even if the server no longer accepts ticks."""
+    try:
+        world.tick()
+    except RuntimeError as exc:
+        log.warning("Could not tick world during teardown: %s", exc)
+    except Exception as exc:
+        log.warning("Unexpected error ticking world during teardown: %s", exc)
 
 
 def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: AvoidanceConfig) -> Path:
@@ -251,7 +303,7 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
         actors.append(sensor)
         detector = None
         if "lidar" in (params.obstacle_source, params.adjacent_source):
-            detector = LidarObstacleDetector(world, ego)
+            detector = LidarObstacleDetector(world, ego, mount=LidarMount(semantic=params.lidar_debug))
             actors.append(detector.sensor)
         world.tick()
         gt_fn = ground_truth_obstacle_distance(world)
@@ -268,33 +320,38 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
                  lane_gap, " (overtake via oncoming lane)" if oncoming else "", collided["hit"])
         return out
     finally:
-        for a in reversed(actors):
-            if a.type_id.startswith("sensor."):
-                a.stop()
-            a.destroy()
-        settings.synchronous_mode, settings.fixed_delta_seconds = False, None
-        world.apply_settings(settings)
+        _teardown(client, world, settings, actors)
 
 
-def main() -> None:
+def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=2000)
+    ap.add_argument("--timeout", type=float, default=180.0,
+                    help="seconds to wait for CARLA (map loads on a cold start can exceed 60 s)")
     ap.add_argument("--towns", nargs="+", default=list(DEFAULT_TOWNS))
     ap.add_argument("--scenario", choices=(*SCENARIOS, "all"), default="all")
     ap.add_argument("--runs", type=int, default=5)
+    ap.add_argument("--first-run", type=int, default=1, help="start numbering at this run (re-run one seed)")
     ap.add_argument("--out", default="results")
+    ap.add_argument("--resume", action="store_true", help="skip runs whose CSV already exists")
     ap.add_argument("--realtime", action="store_true", help="run at real speed (for recording a demo video)")
     ap.add_argument("--hud", action="store_true", help="show controller mode, speed and obstacle gap above the car")
     ap.add_argument("--obstacle", choices=PERCEPTION_SOURCES, default="groundtruth",
                     help="obstacle_distance source: CARLA ground truth or Abir's LiDAR module")
     ap.add_argument("--adjacent", choices=PERCEPTION_SOURCES, default="groundtruth",
                     help="adjacent-lane-free check: CARLA ground truth or LiDAR")
-    args = ap.parse_args()
+    ap.add_argument("--lidar-debug", action="store_true",
+                    help="use semantic LiDAR and log the object tag behind detections")
+    return ap.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     client = carla.Client(args.host, args.port)
-    client.set_timeout(60.0)
+    client.set_timeout(args.timeout)
     base_cfg = AvoidanceConfig()
     scenarios = SCENARIOS if args.scenario == "all" else (args.scenario,)
     for town in args.towns:
@@ -304,14 +361,16 @@ def main() -> None:
         out_dir = Path(args.out) / town
         out_dir.mkdir(parents=True, exist_ok=True)
         for scenario in scenarios:
-            for i in range(1, args.runs + 1):
+            for i in range(args.first_run, args.runs + 1):
                 rng = random.Random(f"params-{town}-{scenario}-{i}")
                 params = RunParams(
                     town=town, scenario=scenario, run=i,
                     obstacle_m=round(rng.uniform(*OBSTACLE_RANGE_M), 1),
                     target_speed=round(rng.uniform(*TARGET_SPEED_RANGE), 2),
-                    realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle, adjacent_source=args.adjacent,
+                    lidar_debug=args.lidar_debug, realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle, adjacent_source=args.adjacent,
                 )
+                if args.resume and (out_dir / f"{scenario}_run{i}.csv").exists():
+                    continue
                 run_once(client, params, out_dir, base_cfg)
 
 
