@@ -6,6 +6,7 @@ Builds a `Perception` from the CARLA world each tick and applies the
 Plug-in points (so teammates' modules drop straight in):
     lane_steer_fn(vehicle)        -> float   # Adil's lane module (steering_angle)
     obstacle_distance_fn(vehicle) -> float|None  # Abir's obstacle module
+    adjacent_clear_fn(home_wp, target_offset, lane_width) -> bool  # Abir's module
 If they are not ready yet, ground-truth fallbacks from the CARLA map/actors are
 used so the avoidance logic can still be tested. ALWAYS report in the results
 which source was used.
@@ -22,6 +23,8 @@ from avoidance.collision_avoidance import AvoidanceConfig, ControlCommand, Mode,
 
 LaneSteerFn = Callable[[carla.Vehicle], float]
 ObstacleFn = Callable[[carla.Vehicle], Optional[float]]
+# (home-lane waypoint next to the car, target lateral offset from it in m, lane width) -> free?
+AdjacentClearFn = Callable[[carla.Waypoint, float, float], bool]
 
 PATH_MARGIN = 0.3          # m, extra lateral clearance when judging "in path"
 DETECTION_RANGE = 60.0     # m
@@ -61,28 +64,50 @@ def _lateral(wp: carla.Waypoint, loc: carla.Location) -> float:
     return d.x * r.x + d.y * r.y
 
 
+def _lane_samples(start: carla.Waypoint, length: float, step_m: float,
+                  reverse: bool) -> list[carla.Waypoint]:
+    samples, sample, travelled = [], start, 0.0
+    while sample is not None and travelled <= length:
+        samples.append(sample)
+        sample = _step(sample, step_m, reverse)
+        travelled += step_m
+    return samples
+
+
+def lane_path(
+    vehicle: carla.Vehicle, wp: carla.Waypoint, shift: float, ahead: float,
+    behind: float = 0.0, reverse: bool = False, step_m: float = 2.0,
+) -> list[tuple[float, float]]:
+    """Centreline of a lane as (forward, right) points in the vehicle frame, sorted.
+
+    Follows the lane through `wp` (map geometry only, no other actors), shifted
+    sideways by `shift` metres (+ = right of that lane), from `behind` m behind to
+    `ahead` m in front along the lane. `reverse` = we drive against the lane direction.
+    """
+    back = _lane_samples(wp, behind, step_m, not reverse)[1:] if behind > 0 else []
+    pts = []
+    for sample in back[::-1] + _lane_samples(wp, ahead, step_m, reverse):
+        r = sample.transform.get_right_vector()
+        loc = sample.transform.location + carla.Location(x=r.x * shift, y=r.y * shift)
+        pts.append(_local_xy(vehicle, loc))
+    pts.sort()
+    return [p for i, p in enumerate(pts) if i == 0 or p[0] > pts[i - 1][0]]
+
+
 def lane_path_ahead(
     cmap: carla.Map, vehicle: carla.Vehicle, length: float = DETECTION_RANGE, step_m: float = 2.0
 ) -> list[tuple[float, float]]:
-    """Predicted path as (forward, right) points in the vehicle frame.
+    """Predicted path ahead as (forward, right) points in the vehicle frame.
 
-    Follows the shape of the lane the car is in (map geometry only, no other actors),
-    shifted sideways so it passes through the car. During a lane change the path
-    therefore runs parallel to the lane at the car's current offset — the same
-    "in path" definition the ground-truth fallback uses.
+    Follows the shape of the lane the car is in, shifted sideways so it passes through
+    the car. During a lane change the path therefore runs parallel to the lane at the
+    car's current offset — the same "in path" definition the ground-truth fallback uses.
     """
     wp, reverse = _travel_waypoint(cmap, vehicle)
     car_lat = _lateral(wp, vehicle.get_location())
-    points, sample, travelled = [(0.0, 0.0)], wp, 0.0
-    while sample is not None and travelled <= length:
-        r = sample.transform.get_right_vector()
-        loc = sample.transform.location + carla.Location(x=r.x * car_lat, y=r.y * car_lat)
-        fwd, right = _local_xy(vehicle, loc)
-        if fwd > points[-1][0]:
-            points.append((fwd, right))
-        sample = _step(sample, step_m, reverse)
-        travelled += step_m
-    return points
+    ahead = [p for p in lane_path(vehicle, wp, car_lat, length, reverse=reverse, step_m=step_m)
+             if p[0] > 0.0]
+    return [(0.0, 0.0)] + ahead
 
 
 def ground_truth_obstacle_distance(world: carla.World, step_m: float = 1.0) -> ObstacleFn:
@@ -158,6 +183,7 @@ class CarlaAvoidanceBridge:
         config: AvoidanceConfig,
         lane_steer_fn: Optional[LaneSteerFn] = None,
         obstacle_distance_fn: Optional[ObstacleFn] = None,
+        adjacent_clear_fn: Optional[AdjacentClearFn] = None,
     ) -> None:
         self.world = world
         self.map = world.get_map()
@@ -165,6 +191,7 @@ class CarlaAvoidanceBridge:
         self.config = config
         self.lane_steer_fn = lane_steer_fn or waypoint_lane_steer(world)
         self.obstacle_distance_fn = obstacle_distance_fn or ground_truth_obstacle_distance(world)
+        self.adjacent_clear_fn = adjacent_clear_fn  # None -> ground truth
         self._home_wp: Optional[carla.Waypoint] = None
         self.odometer = 0.0
         # Set lazily: before the first world.tick() a new actor reports (0,0,0).
@@ -214,8 +241,20 @@ class CarlaAvoidanceBridge:
         return math.atan2(math.sin(diff), math.cos(diff))
 
     def adjacent_lane_clear(self) -> bool:
-        """Is the avoid-side lane free? Checked geometrically relative to the home
-        lane (road/lane IDs change between road segments, so they can't be compared)."""
+        """Is the avoid-side lane free? The map must have a driving lane there; whether
+        it is occupied comes from the plug-in (LiDAR) or the ground-truth fallback."""
+        home = self._home_waypoint()
+        if self._adjacent_wp(home) is None:
+            return False
+        if self.adjacent_clear_fn is None:
+            return self.ground_truth_adjacent_lane_clear()
+        target = self.config.avoid_side * self.config.lane_width
+        return self.adjacent_clear_fn(home, target, self.config.lane_width)
+
+    def ground_truth_adjacent_lane_clear(self) -> bool:
+        """Fallback (stands in for the LiDAR check): actor positions, measured relative
+        to the home lane (road/lane IDs change between road segments, so they can't be
+        compared)."""
         home = self._home_waypoint()
         if self._adjacent_wp(home) is None:
             return False

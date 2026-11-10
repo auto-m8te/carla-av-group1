@@ -134,3 +134,43 @@ def test_low_terrain_beside_elevated_road_does_not_lift_the_road():
     xs, ys = np.meshgrid(np.arange(3.0, 60.0, 0.5), np.arange(10.0, 20.0, 0.5))
     terrain = np.column_stack([xs.ravel(), ys.ravel(), np.full(xs.size, -8.0)])
     assert not detect_obstacle(np.vstack([ground(half_width=6.0), terrain]), CFG).ahead
+
+
+# ---- adjacent-lane occupancy (is the lane we would swerve into free?) ----
+
+from perception.obstacle_detection import lane_occupied  # noqa: E402
+
+LEFT_LANE = np.array([[-20.0, -3.5], [65.0, -3.5]])   # centreline of the lane to our left
+
+
+def test_empty_adjacent_lane_is_free():
+    assert not lane_occupied(ground(), CFG, LEFT_LANE, lane_width=3.5)
+
+
+def test_parked_car_in_adjacent_lane_blocks_it():
+    cloud = np.vstack([ground(), box(40.0, -3.5)])
+    assert lane_occupied(cloud, CFG, LEFT_LANE, lane_width=3.5)
+
+
+def test_car_behind_in_adjacent_lane_blocks_it():
+    cloud = np.vstack([ground(), box(-12.0, -3.5)])
+    assert lane_occupied(cloud, CFG, LEFT_LANE, lane_width=3.5, behind=15.0)
+
+
+def test_obstacle_in_our_own_lane_does_not_block_adjacent_lane():
+    cloud = np.vstack([ground(), box(30.0, 0.0)])
+    assert not lane_occupied(cloud, CFG, LEFT_LANE, lane_width=3.5)
+
+
+def test_beyond_lookahead_does_not_block():
+    cloud = np.vstack([ground(x_max=90.0), box(70.0, -3.5)])
+    assert not lane_occupied(cloud, CFG, LEFT_LANE, lane_width=3.5, ahead=60.0)
+
+
+def test_own_car_body_is_never_counted():
+    # Halfway through a lane change the target lane centre is 2 m to our left, so our
+    # own body (|y| <= 1 m) sits inside the target lane band.
+    halfway = np.array([[-20.0, -2.0], [65.0, -2.0]])
+    body = np.column_stack([np.linspace(-2.0, 2.0, 30), np.full(30, -0.9), np.full(30, 1.2)])
+    cloud = np.vstack([ground(), body])
+    assert not lane_occupied(cloud, CFG, halfway, lane_width=3.5)

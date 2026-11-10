@@ -72,3 +72,14 @@ def test_old_csvs_without_ground_truth_column_still_load(tmp_path):
     write_toy_run(tmp_path / "empty_lane_run1.csv", None, False)  # FIELDS has no gt column
     (m,) = analyze(tmp_path, make_plots=False)
     assert m.perception_mae_m is None and m.perception_missed == 0
+
+
+def test_adjacent_lane_disagreement_is_counted(tmp_path):
+    path = tmp_path / "obstacle_avoid_run1.csv"
+    write_toy_run(path, 60.0, True)
+    lines = path.read_text().splitlines()
+    header = lines[0] + ",gt_obstacle_distance,gt_adjacent_lane_clear"
+    body = [ln + "," + ("," + ("0" if i < 5 else "1")) for i, ln in enumerate(lines[1:])]
+    path.write_text("\n".join([header] + body) + "\n")
+    (m,) = analyze(tmp_path, make_plots=False)
+    assert m.adjacent_disagree == 5   # toy run logs adjacent_lane_clear=1 everywhere

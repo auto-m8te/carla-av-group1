@@ -49,9 +49,10 @@ MAX_HEADING_CHANGE_DEG = 25.0      # mild curves allowed, no sharp turns
 CSV_FIELDS = (
     "t", "x", "y", "speed", "mode", "obstacle_distance", "lateral_offset",
     "adjacent_lane_clear", "throttle", "steer", "brake", "odometer", "collision",
-    "gt_obstacle_distance",  # ground truth, logged alongside to measure perception error
+    "gt_obstacle_distance",     # ground truth, logged alongside to measure perception error
+    "gt_adjacent_lane_clear",
 )
-OBSTACLE_SOURCES = ("groundtruth", "lidar")
+PERCEPTION_SOURCES = ("groundtruth", "lidar")
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class RunParams:
     realtime: bool = False   # pace ticks to wall-clock time (for demo videos)
     hud: bool = False        # draw controller mode / speed / gap above the car
     obstacle_source: str = "groundtruth"  # "lidar" = Abir's LiDAR module (E3)
+    adjacent_source: str = "groundtruth"  # "lidar" = adjacent-lane check from LiDAR too
 
 
 def _adjacent(wp: carla.Waypoint, side: int) -> Optional[carla.Waypoint]:
@@ -206,7 +208,11 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                 throttle=cmd.throttle, steer=cmd.steer, brake=cmd.brake,
                 odometer=p.distance_travelled, collision=int(collided["hit"]),
                 gt_obstacle_distance=_blank(
-                    p.obstacle_distance if detector is None else gt_fn(ego)
+                    gt_fn(ego) if params.obstacle_source == "lidar" else p.obstacle_distance
+                ),
+                gt_adjacent_lane_clear=int(
+                    bridge.ground_truth_adjacent_lane_clear()
+                    if params.adjacent_source == "lidar" else p.adjacent_lane_clear
                 ),
             )
             writer.writerow(row)
@@ -244,12 +250,16 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
         sensor.listen(lambda _e: collided.__setitem__("hit", True))
         actors.append(sensor)
         detector = None
-        if params.obstacle_source == "lidar":
+        if "lidar" in (params.obstacle_source, params.adjacent_source):
             detector = LidarObstacleDetector(world, ego)
             actors.append(detector.sensor)
         world.tick()
         gt_fn = ground_truth_obstacle_distance(world)
-        bridge = CarlaAvoidanceBridge(world, ego, cfg, obstacle_distance_fn=detector or gt_fn)
+        bridge = CarlaAvoidanceBridge(
+            world, ego, cfg,
+            obstacle_distance_fn=detector if params.obstacle_source == "lidar" else gt_fn,
+            adjacent_clear_fn=detector.adjacent_lane_clear if params.adjacent_source == "lidar" else None,
+        )
         out = out_dir / f"{params.scenario}_run{params.run}.csv"
         drive_and_log(world, ego, bridge, CollisionAvoidance(cfg), params, out, collided, gt_fn, detector)
         oncoming = adj.lane_id * start.lane_id < 0
@@ -276,8 +286,10 @@ def main() -> None:
     ap.add_argument("--out", default="results")
     ap.add_argument("--realtime", action="store_true", help="run at real speed (for recording a demo video)")
     ap.add_argument("--hud", action="store_true", help="show controller mode, speed and obstacle gap above the car")
-    ap.add_argument("--obstacle", choices=OBSTACLE_SOURCES, default="groundtruth",
+    ap.add_argument("--obstacle", choices=PERCEPTION_SOURCES, default="groundtruth",
                     help="obstacle_distance source: CARLA ground truth or Abir's LiDAR module")
+    ap.add_argument("--adjacent", choices=PERCEPTION_SOURCES, default="groundtruth",
+                    help="adjacent-lane-free check: CARLA ground truth or LiDAR")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
@@ -298,7 +310,7 @@ def main() -> None:
                     town=town, scenario=scenario, run=i,
                     obstacle_m=round(rng.uniform(*OBSTACLE_RANGE_M), 1),
                     target_speed=round(rng.uniform(*TARGET_SPEED_RANGE), 2),
-                    realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle,
+                    realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle, adjacent_source=args.adjacent,
                 )
                 run_once(client, params, out_dir, base_cfg)
 

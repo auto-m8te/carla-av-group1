@@ -23,9 +23,13 @@ tests/                            pytest: unit + closed-loop toy sim + analysis 
 Plug real modules in via `CarlaAvoidanceBridge(world, ego, cfg, lane_steer_fn=..., obstacle_distance_fn=...)`.
 Without them, ground-truth fallbacks are used (say so in the report).
 
-The LiDAR obstacle module is already wired in: `--obstacle lidar`. Each run then also
-logs the ground-truth distance (`gt_obstacle_distance`), and the analysis reports the
-detector's distance error, missed ticks and false alarms.
+The LiDAR module is already wired in:
+- `--obstacle lidar`: `obstacle_distance` from LiDAR
+- `--adjacent lidar`: the "is the lane beside us free?" check from LiDAR too
+
+Each run also logs the ground-truth values (`gt_obstacle_distance`, `gt_adjacent_lane_clear`),
+and the analysis reports distance error, missed ticks, false alarms and adjacent-lane
+disagreements. Lane steering is still the ground-truth fallback until Adil's module lands.
 
 ## Obstacle detection (LiDAR)
 ```
@@ -35,6 +39,9 @@ detector's distance error, missed ticks and false alarms.
   -> path corridor: lane ahead from the map, car width + 0.3 m each side
   -> cluster check: >= 3 points within 1 m depth (rejects noise)
   -> obstacle_distance = nearest cluster - front bumper   (None = clear)
+
+Adjacent lane: same filter over the whole neighbouring lane, 15 m behind .. 60 m ahead,
+own car body excluded. No sweep yet -> "not clear" (never swerve blind).
 ```
 
 ## Decision logic
@@ -60,7 +67,7 @@ python -m pytest -q                       # no CARLA needed
 # start CarlaUE4 / CarlaUnreal server, then:
 python -m scenarios.run_scenarios --runs 5            # all 6 towns, 90 runs (~30 min)
 python -m scenarios.run_scenarios --towns Town03 --runs 1   # quick single-town check
-python -m scenarios.run_scenarios --runs 5 --obstacle lidar --out results_lidar   # with the LiDAR module
+python -m scenarios.run_scenarios --runs 5 --obstacle lidar --adjacent lidar --out results_lidar   # LiDAR perception
 python -m scenarios.run_scenarios --towns Town04 --runs 1 --realtime --hud --out results_demo   # live demo
 python -m analysis.analyze_results --results results
 ```

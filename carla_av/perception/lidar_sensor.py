@@ -5,7 +5,8 @@ vehicle frame and runs `detect_obstacle`. An instance is callable with the same
 signature as the obstacle plug-in point of `CarlaAvoidanceBridge`:
 
     detector = LidarObstacleDetector(world, ego)
-    bridge = CarlaAvoidanceBridge(world, ego, cfg, obstacle_distance_fn=detector)
+    bridge = CarlaAvoidanceBridge(world, ego, cfg, obstacle_distance_fn=detector,
+                                  adjacent_clear_fn=detector.adjacent_lane_clear)
     ...
     detector.destroy()
 
@@ -28,8 +29,10 @@ from typing import Optional
 import carla
 import numpy as np
 
-from avoidance.carla_adapter import lane_path_ahead
-from perception.obstacle_detection import CLEAR, Detection, LidarDetectionConfig, detect_obstacle
+from avoidance.carla_adapter import ADJ_LANE_CHECK_AHEAD, ADJ_LANE_CHECK_BACK, lane_path, lane_path_ahead
+from perception.obstacle_detection import (
+    CLEAR, Detection, LidarDetectionConfig, detect_obstacle, lane_occupied,
+)
 
 log = logging.getLogger("lidar")
 
@@ -70,6 +73,7 @@ class LidarObstacleDetector:
         self.mount = mount
         self.vehicle = vehicle
         self.last_detection: Detection = CLEAR
+        self._points: Optional[np.ndarray] = None   # latest sweep, vehicle frame
         self._queue: "queue.Queue[carla.LidarMeasurement]" = queue.Queue()
         self.sensor = world.spawn_actor(
             self._blueprint(world, 1.0 / (world.get_settings().fixed_delta_seconds or 0.05)),
@@ -91,6 +95,14 @@ class LidarObstacleDetector:
         ):
             bp.set_attribute(key, str(value))
         return bp
+
+    def _refresh(self) -> bool:
+        """Pull the newest sweep (if any) into self._points. True if a new one arrived."""
+        pts = self._latest_points()
+        if pts is None:
+            return False
+        self._points = pts
+        return True
 
     def _latest_points(self) -> Optional[np.ndarray]:
         """Most recent sweep as (N, 3) vehicle-frame points; older sweeps are dropped."""
@@ -118,11 +130,11 @@ class LidarObstacleDetector:
         return max(-MAX_CURVATURE, min(MAX_CURVATURE, yaw_rate / speed))
 
     def __call__(self, vehicle: carla.Vehicle) -> Optional[float]:
-        pts = self._latest_points()
-        if pts is None:
+        if not self._refresh():
             # No new sweep this tick (e.g. first tick): keep the previous answer
             # rather than reporting a possibly false "clear".
             return self.last_detection.distance
+        pts = self._points
         path = None
         if self.map is not None:
             length = self.config.max_range + self.config.ego_half_length
@@ -132,6 +144,21 @@ class LidarObstacleDetector:
         else:  # no map / end of road: fall back to the yaw-rate arc
             self.last_detection = detect_obstacle(pts, self.config, self._curvature(vehicle))
         return self.last_detection.distance
+
+    def adjacent_lane_clear(self, home_wp: carla.Waypoint, target_offset: float,
+                            lane_width: float) -> bool:
+        """Plug-in for CarlaAvoidanceBridge: is the lane `target_offset` metres beside
+        the home lane free from ADJ_LANE_CHECK_BACK behind to ADJ_LANE_CHECK_AHEAD ahead?
+        No sweep yet -> not clear (never swerve blind)."""
+        self._refresh()
+        if self._points is None:
+            return False
+        path = np.asarray(lane_path(self.vehicle, home_wp, target_offset,
+                                    ahead=ADJ_LANE_CHECK_AHEAD, behind=ADJ_LANE_CHECK_BACK))
+        if len(path) < 2:
+            return False
+        return not lane_occupied(self._points, self.config, path, lane_width,
+                                 behind=ADJ_LANE_CHECK_BACK, ahead=ADJ_LANE_CHECK_AHEAD)
 
     def nearest_point_world(self) -> Optional[carla.Location]:
         """World location of the accepted detection (for debug drawing)."""
