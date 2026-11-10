@@ -6,7 +6,7 @@ Builds a `Perception` from the CARLA world each tick and applies the
 Plug-in points (so teammates' modules drop straight in):
     lane_steer_fn(vehicle)        -> float   # Adil's lane module (steering_angle)
     obstacle_distance_fn(vehicle) -> float|None  # Abir's obstacle module
-    adjacent_clear_fn(home_wp, target_offset, lane_width) -> bool  # Abir's module
+    adjacent_clear_fn(home_wp, target_offset, lane_width, behind) -> bool
 If they are not ready yet, ground-truth fallbacks from the CARLA map/actors are
 used so the avoidance logic can still be tested. ALWAYS report in the results
 which source was used.
@@ -15,16 +15,22 @@ which source was used.
 from __future__ import annotations
 
 import math
+import logging
+import inspect
 from typing import Callable, Optional
 
 import carla  # requires CARLA PythonAPI (Python 3.8-3.12)
 
 from avoidance.collision_avoidance import AvoidanceConfig, ControlCommand, Mode, Perception
+from perception.tracking import Debounce, GapTracker, lane_free_for_manoeuvre
+
+log = logging.getLogger(__name__)
 
 LaneSteerFn = Callable[[carla.Vehicle], float]
 ObstacleFn = Callable[[carla.Vehicle], Optional[float]]
-# (home-lane waypoint next to the car, target lateral offset from it in m, lane width) -> free?
-AdjacentClearFn = Callable[[carla.Waypoint, float, float], bool]
+# Home waypoint, target offset, lane width, look-behind distance -> free?
+# Legacy three-argument plug-ins are also accepted.
+AdjacentClearFn = Callable[[carla.Waypoint, float, float, float], bool] | Callable[[carla.Waypoint, float, float], bool]
 
 PATH_MARGIN = 0.3          # m, extra lateral clearance when judging "in path"
 DETECTION_RANGE = 60.0     # m
@@ -110,7 +116,21 @@ def lane_path_ahead(
     return [(0.0, 0.0)] + ahead
 
 
-def ground_truth_obstacle_distance(world: carla.World, step_m: float = 1.0) -> ObstacleFn:
+def _nearest_sample(wp: carla.Waypoint, loc: carla.Location, step_m: float,
+                    reverse: bool) -> tuple[float, float]:
+    sample, travelled = wp, 0.0
+    best = (float("inf"), 0.0)  # (distance to sample, arc length)
+    while travelled < DETECTION_RANGE and sample is not None:
+        dist = sample.transform.location.distance(loc)
+        if dist < best[0]:
+            best = (dist, travelled)
+        sample = _step(sample, step_m, reverse)
+        travelled += step_m
+    return best
+
+
+def ground_truth_obstacle_distance(world: carla.World, step_m: float = 1.0,
+                                   interpolate: bool = False) -> ObstacleFn:
     """Fallback obstacle module (stands in for Abir's LiDAR module).
 
     Walks the car's lane forward (so it works on curves) and reports the gap to the
@@ -136,14 +156,7 @@ def ground_truth_obstacle_distance(world: carla.World, step_m: float = 1.0) -> O
             fwd, _ = _local_xy(vehicle, loc)
             if fwd <= 0:
                 continue
-            sample, travelled = wp, 0.0
-            best = (float("inf"), 0.0)  # (distance to sample, arc length)
-            while travelled < DETECTION_RANGE and sample is not None:
-                dist = sample.transform.location.distance(loc)
-                if dist < best[0]:
-                    best = (dist, travelled)
-                sample = _step(sample, step_m, reverse)
-                travelled += step_m
+            best = _nearest_sample(wp, loc, step_m, reverse)
             arc = best[1]
             anchor = _step(wp, arc, reverse) if arc > 0 else wp
             if anchor is None:
@@ -151,6 +164,11 @@ def ground_truth_obstacle_distance(world: carla.World, step_m: float = 1.0) -> O
             lat = _lateral(anchor, loc) * (-1 if reverse else 1)
             overlap = ego_half_w + actor.bounding_box.extent.y + PATH_MARGIN
             if abs(lat - car_lat) < overlap:
+                if interpolate:
+                    direction = anchor.transform.get_forward_vector()
+                    delta = loc - anchor.transform.location
+                    projection = delta.x * direction.x + delta.y * direction.y
+                    arc += projection * (-1 if reverse else 1)
                 gap = arc - actor.bounding_box.extent.x - ego_half_l
                 nearest = gap if nearest is None else min(nearest, gap)
         return nearest
@@ -184,6 +202,7 @@ class CarlaAvoidanceBridge:
         lane_steer_fn: Optional[LaneSteerFn] = None,
         obstacle_distance_fn: Optional[ObstacleFn] = None,
         adjacent_clear_fn: Optional[AdjacentClearFn] = None,
+        tracking_distance_fn: Optional[ObstacleFn] = None,
     ) -> None:
         self.world = world
         self.map = world.get_map()
@@ -191,11 +210,19 @@ class CarlaAvoidanceBridge:
         self.config = config
         self.lane_steer_fn = lane_steer_fn or waypoint_lane_steer(world)
         self.obstacle_distance_fn = obstacle_distance_fn or ground_truth_obstacle_distance(world)
+        self.tracking_distance_fn = tracking_distance_fn or (
+            ground_truth_obstacle_distance(world, interpolate=True)
+            if obstacle_distance_fn is None else self.obstacle_distance_fn)
         self.adjacent_clear_fn = adjacent_clear_fn  # None -> ground truth
         self._home_wp: Optional[carla.Waypoint] = None
         self.odometer = 0.0
         # Set lazily: before the first world.tick() a new actor reports (0,0,0).
         self._last_location: Optional[carla.Location] = None
+        self._obstacle_tracker = GapTracker()
+        self._last_frame: Optional[int] = None
+        self._adjacent_debounce = Debounce(config.adjacent_clear_hold)
+        self._adjacent_frame: Optional[int] = None
+        self._adjacent_clear = False
 
     def _adjacent_wp(self, wp: carla.Waypoint) -> Optional[carla.Waypoint]:
         adj = wp.get_left_lane() if self.config.avoid_side < 0 else wp.get_right_lane()
@@ -244,34 +271,67 @@ class CarlaAvoidanceBridge:
         """Is the avoid-side lane free? The map must have a driving lane there; whether
         it is occupied comes from the plug-in (LiDAR) or the ground-truth fallback."""
         home = self._home_waypoint()
-        if self._adjacent_wp(home) is None:
-            return False
-        if self.adjacent_clear_fn is None:
-            return self.ground_truth_adjacent_lane_clear()
-        target = self.config.avoid_side * self.config.lane_width
-        return self.adjacent_clear_fn(home, target, self.config.lane_width)
+        adjacent = self._adjacent_wp(home)
+        if adjacent is None:
+            raw = False
+        elif self.adjacent_clear_fn is None:
+            raw = self.ground_truth_adjacent_lane_clear()
+        else:
+            target = self.config.avoid_side * self.config.lane_width
+            behind = 0.0 if adjacent.lane_id * home.lane_id < 0 else ADJ_LANE_CHECK_BACK
+            args = (home, target, self.config.lane_width, behind)
+            try:
+                inspect.signature(self.adjacent_clear_fn).bind(*args)
+            except TypeError:
+                raw = self.adjacent_clear_fn(*args[:3])
+            else:
+                raw = self.adjacent_clear_fn(*args)
+        try:
+            snapshot = self.world.get_snapshot()
+        except AttributeError:
+            snapshot = None
+        frame = getattr(snapshot, "frame", None)
+        dt = getattr(getattr(snapshot, "timestamp", None), "delta_seconds", 0.05)
+        dt = dt if dt is not None and dt > 0 else 0.05
+        # Repeated reads in one world tick must not advance the clearance timer.
+        if not raw or frame is None or frame != self._adjacent_frame:
+            self._adjacent_clear = self._adjacent_debounce.update(raw, dt)
+            self._adjacent_frame = frame
+        return self._adjacent_clear
 
     def ground_truth_adjacent_lane_clear(self) -> bool:
         """Fallback (stands in for the LiDAR check): actor positions, measured relative
         to the home lane (road/lane IDs change between road segments, so they can't be
         compared)."""
         home = self._home_waypoint()
-        if self._adjacent_wp(home) is None:
+        adjacent = self._adjacent_wp(home)
+        if adjacent is None:
             return False
+        behind = (self.vehicle.bounding_box.extent.x
+                  if adjacent.lane_id * home.lane_id < 0 else ADJ_LANE_CHECK_BACK)
         target = self.config.avoid_side * self.config.lane_width
         for actor in self.world.get_actors().filter("vehicle.*"):
             if actor.id == self.vehicle.id:
                 continue
             loc = actor.get_location()
             fwd, _ = _local_xy(self.vehicle, loc)
-            if not -ADJ_LANE_CHECK_BACK < fwd < ADJ_LANE_CHECK_AHEAD:
+            if not -behind < fwd < self.config.adjacent_detection_range:
                 continue
             # Measure the actor against the home lane AT THE ACTOR'S POSITION, so the
             # check stays correct on curves (lane direction there differs from ours).
             anchor = _step(home, abs(fwd), reverse=fwd < 0) if abs(fwd) > 0.5 else home
             actor_offset = _lateral(anchor or home, loc)
             if abs(actor_offset - target) <= self.config.lane_width / 2:
-                return False
+                gap = fwd - self.vehicle.bounding_box.extent.x - actor.bounding_box.extent.x
+                if gap <= 10.0:
+                    return False
+                direction = (anchor or home).transform.get_forward_vector()
+                velocity = actor.get_velocity()
+                other_speed = velocity.x * direction.x + velocity.y * direction.y
+                closing = speed_of(self.vehicle) - other_speed
+                if not lane_free_for_manoeuvre(gap, closing, self.config.manoeuvre_horizon,
+                                              self.config.manoeuvre_margin):
+                    return False
         return True
 
     def perceive(self) -> Perception:
@@ -279,10 +339,18 @@ class CarlaAvoidanceBridge:
         if self._last_location is not None:
             self.odometer += loc.distance(self._last_location)
         self._last_location = loc
+        gap = self.obstacle_distance_fn(self.vehicle)
+        speed = speed_of(self.vehicle)
+        snapshot = self.world.get_snapshot()
+        if snapshot.frame != self._last_frame:
+            tracked_gap = self.tracking_distance_fn(self.vehicle) if gap is not None else None
+            self._obstacle_tracker.update(tracked_gap, speed, snapshot.timestamp.delta_seconds)
+            self._last_frame = snapshot.frame
         return Perception(
             lane_steer=self.lane_steer_fn(self.vehicle),
-            obstacle_distance=self.obstacle_distance_fn(self.vehicle),
-            speed=speed_of(self.vehicle),
+            obstacle_distance=gap,
+            obstacle_speed=self._obstacle_tracker.speed,
+            speed=speed,
             adjacent_lane_clear=self.adjacent_lane_clear(),
             lateral_offset=self.lateral_offset(),
             distance_travelled=self.odometer,
@@ -291,7 +359,10 @@ class CarlaAvoidanceBridge:
 
     def apply(self, cmd: ControlCommand) -> None:
         if cmd.mode == Mode.CRUISE and abs(self.lateral_offset()) > self.config.lane_width / 2:
-            self.reanchor_home_lane()
+            home = self._home_waypoint()
+            current = self.map.get_waypoint(self.vehicle.get_location())
+            if current.lane_id * home.lane_id >= 0:
+                self.reanchor_home_lane()
         self.vehicle.apply_control(
             carla.VehicleControl(throttle=cmd.throttle, steer=cmd.steer, brake=cmd.brake)
         )

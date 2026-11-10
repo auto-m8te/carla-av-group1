@@ -207,3 +207,37 @@ def test_adjacent_check_stops_at_the_end_of_the_lane_path():
     short_left = np.array([[-20.0, -3.5], [30.0, -3.5]])
     building = box(45.0, -3.5, length=5.0, width=3.0, height=2.4)
     assert not lane_occupied(np.vstack([ground(), building]), CFG, short_left, lane_width=3.5)
+
+
+def test_nearest_adjacent_x_is_ahead_of_front_bumper():
+    from perception.obstacle_detection import nearest_occupied_ahead
+
+    cloud = np.vstack([ground(), box(-12.0, -3.5), box(30.0, -3.5), box(45.0, -3.5)])
+    assert nearest_occupied_ahead(cloud, CFG, LEFT_LANE, 3.5) == pytest.approx(30.0)
+    assert nearest_occupied_ahead(ground(), CFG, LEFT_LANE, 3.5) is None
+
+
+def test_adjacent_long_range_can_see_scripted_oncoming_before_pullout():
+    from perception.obstacle_detection import nearest_occupied_ahead
+
+    path = np.array([[-20.0, -3.5], [180.0, -3.5]])
+    cloud = np.vstack([ground(x_max=180), box(110.0, -3.5)])
+    assert nearest_occupied_ahead(cloud, CFG, path, 3.5, ahead=180.0) == pytest.approx(110.0)
+
+
+@pytest.mark.parametrize("adjacent", [False, True])
+def test_sparse_road_returns_do_not_hide_distant_car(adjacent):
+    from perception.obstacle_detection import nearest_occupied_ahead
+
+    cfg = LidarDetectionConfig(max_range=80.0)
+    y = -3.5 if adjacent else 0.0
+    xs, zs = np.meshgrid(np.arange(64.0, 65.1, 0.25), np.linspace(0.35, 1.5, 8))
+    car = np.column_stack([xs.ravel(), np.full(xs.size, y), zs.ravel()])
+    cloud = np.vstack([ground(x_max=45.0), car])
+    path = np.array([[-20.0, y], [80.0, y]])
+    if adjacent:
+        assert nearest_occupied_ahead(cloud, cfg, path, 3.5, ahead=80.0) == pytest.approx(64.0)
+    else:
+        det = detect_obstacle(cloud, cfg, path=path)
+        assert det.ahead
+        assert det.distance == pytest.approx(64.0 - cfg.ego_half_length)

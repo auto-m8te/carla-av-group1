@@ -12,6 +12,42 @@ from avoidance.collision_avoidance import (
 CFG = AvoidanceConfig()
 
 
+def test_adjacent_clear_hold_default():
+    assert CFG.adjacent_clear_hold == 1.0
+
+
+@pytest.mark.parametrize("mode,target,offset", [(Mode.AVOID, -3.5, 0.0), (Mode.ABORT, 0.0, -2.5)])
+@pytest.mark.parametrize("speed,scale,limit", [(1.0, 0.35, 0.7), (3.0, 0.35, 0.7), (4.0, 0.675, 0.55), (5.0, 1.0, 0.4), (8.0, 1.0, 0.4)])
+def test_pullout_heading_gain_and_clamp(mode, target, offset, speed, scale, limit):
+    cfg = AvoidanceConfig()
+    state = AvoidanceState(mode=mode, obstacle_odometer=50.0)
+    for heading in (-0.3, 2.0):
+        _, cmd = decide(state, perceive(speed=speed, lateral_offset=offset,
+                                       heading_error=heading, adjacent_lane_clear=True), cfg)
+        expected = cfg.lateral_kp * (target - offset) - cfg.heading_kd * scale * heading
+        assert cmd.steer == pytest.approx(max(-limit, min(limit, expected)))
+
+
+@pytest.mark.parametrize("side", [-1, 1])
+def test_stopped_avoid_creeps_with_full_pullout_steer(side):
+    cfg = AvoidanceConfig(avoid_side=side)
+    state = AvoidanceState(mode=Mode.AVOID, obstacle_odometer=20.0)
+    new, cmd = decide(state, perceive(obstacle_distance=1.6, speed=0.0,
+                                    adjacent_lane_clear=True), cfg)
+    assert new == state and cmd.mode == Mode.AVOID
+    assert cmd.brake == 0.0 and cmd.steer == side * 0.7
+    assert cmd.throttle == pytest.approx(cfg.throttle_feedforward + cfg.speed_kp * 1.0)
+
+
+@pytest.mark.parametrize("gap,clear,offset,speed", [
+    (0.7, True, 0.0, 0.0), (0.8, True, 0.0, 0.0),
+    (1.6, False, 0.0, 0.0), (1.6, True, -3.6, 0.0), (1.6, True, 0.0, 2.0)])
+def test_creep_requires_safe_gap_clear_lane_slow_and_not_yet_over(gap, clear, offset, speed):
+    _, cmd = decide(AvoidanceState(mode=Mode.AVOID), perceive(
+        obstacle_distance=gap, adjacent_lane_clear=clear, lateral_offset=offset, speed=speed), CFG)
+    assert cmd.brake == 1.0 and cmd.throttle == 0.0
+
+
 def perceive(**kw) -> Perception:
     base = dict(lane_steer=0.05, obstacle_distance=None, speed=8.0, adjacent_lane_clear=False)
     base.update(kw)
@@ -175,3 +211,102 @@ def test_controller_wrapper_tracks_state_and_resets():
     assert ctrl.state.mode == Mode.AVOID
     ctrl.reset()
     assert ctrl.state == AvoidanceState()
+
+
+@pytest.mark.parametrize("mode", [Mode.CRUISE, Mode.BRAKE, Mode.STOPPED])
+def test_moving_lead_follows_and_never_starts_avoid(mode):
+    state, cmd = decide(AvoidanceState(mode=mode), perceive(
+        obstacle_distance=20.0, obstacle_speed=4.0, adjacent_lane_clear=True), CFG)
+    assert state.mode == cmd.mode == Mode.FOLLOW
+
+
+def test_follow_brakes_for_speed_error_and_ttc():
+    for gap in (6.0, 20.0):
+        _, cmd = decide(AvoidanceState(), perceive(
+            obstacle_distance=gap, obstacle_speed=2.0), CFG)
+        assert cmd.mode == Mode.FOLLOW and cmd.brake > 0 and cmd.throttle == 0
+
+
+def test_follow_emergency_disappearance_and_stationary_fallback():
+    state = AvoidanceState(mode=Mode.FOLLOW)
+    _, cmd = decide(state, perceive(obstacle_distance=3.0, obstacle_speed=4.0), CFG)
+    assert cmd.mode == Mode.EMERGENCY_STOP
+    _, cmd = decide(state, perceive(), CFG)
+    assert cmd.mode == Mode.CRUISE
+    _, cmd = decide(state, perceive(obstacle_distance=12.0, obstacle_speed=1.0,
+                                   adjacent_lane_clear=True), CFG)
+    assert cmd.mode == Mode.AVOID
+
+
+@pytest.mark.parametrize("side", [-1, 1])
+def test_committed_blocked_lane_aborts_home_with_room(side):
+    cfg = AvoidanceConfig(avoid_side=side)
+    state = AvoidanceState(mode=Mode.AVOID, obstacle_odometer=52.4)
+    new, cmd = decide(state, perceive(lateral_offset=side * 2.5,
+                                     distance_travelled=30.0), cfg)
+    assert new.mode == cmd.mode == Mode.ABORT
+    assert cmd.steer * side < 0
+    assert cmd.brake > 0 and cmd.throttle == 0
+
+
+@pytest.mark.parametrize("speed, expected", [(0.0, Mode.STOPPED), (8.0, Mode.BRAKE)])
+def test_abort_reaching_home_resets_to_normal_stop(speed, expected):
+    state = AvoidanceState(mode=Mode.ABORT, obstacle_odometer=42.4)
+    new, cmd = decide(state, perceive(lateral_offset=0.1, speed=speed,
+                                     distance_travelled=30.0), CFG)
+    assert new.mode == cmd.mode == expected
+    assert new.obstacle_odometer is None
+    assert cmd.brake > 0 and cmd.throttle == 0
+    retry, _ = decide(new, perceive(obstacle_distance=10.0, speed=0.0,
+                                   adjacent_lane_clear=True), CFG)
+    assert retry.mode == Mode.AVOID
+
+
+def test_committed_blocked_lane_does_not_abort_alongside_obstacle():
+    state = AvoidanceState(mode=Mode.AVOID, obstacle_odometer=35.4)
+    new, cmd = decide(state, perceive(lateral_offset=-2.5,
+                                     distance_travelled=30.0), CFG)
+    assert new.mode == Mode.AVOID
+    assert cmd.steer < 0 and cmd.brake > 0
+
+
+def test_abort_emergency_stop_has_priority():
+    state = AvoidanceState(mode=Mode.ABORT, obstacle_odometer=52.4)
+    _, cmd = decide(state, perceive(lateral_offset=-2.5, obstacle_distance=1.0), CFG)
+    assert cmd.mode == Mode.EMERGENCY_STOP and cmd.brake == 1.0
+
+
+@pytest.mark.parametrize("mode", [Mode.STOPPED, Mode.AVOID])
+def test_pull_out_caps_target_from_standstill(mode):
+    cfg = AvoidanceConfig(max_throttle=1.0)
+    _, cmd = decide(AvoidanceState(mode=mode), perceive(
+        obstacle_distance=11.0, speed=0.0, adjacent_lane_clear=True), cfg)
+    target = (11.0 - cfg.safety_margin) / cfg.lane_change_time
+    assert cmd.mode == Mode.AVOID
+    assert cmd.throttle == pytest.approx(cfg.throttle_feedforward + cfg.speed_kp * target)
+
+
+def test_pull_out_brakes_gently_above_cap():
+    _, cmd = decide(AvoidanceState(mode=Mode.AVOID), perceive(
+        obstacle_distance=11.0, speed=4.0, adjacent_lane_clear=True), CFG)
+    assert cmd.mode == Mode.AVOID
+    assert cmd.throttle == 0.0
+    assert cmd.brake == 0.3
+
+
+@pytest.mark.parametrize("gap,offset", [(40.0, 0.0), (None, 0.0), (11.0, -1.75)])
+def test_pull_out_preserves_cruise_when_cap_not_needed(gap, offset):
+    _, cmd = decide(AvoidanceState(mode=Mode.AVOID), perceive(
+        obstacle_distance=gap, lateral_offset=offset, speed=8.0,
+        adjacent_lane_clear=True), CFG)
+    assert cmd.throttle == pytest.approx(CFG.throttle_feedforward + CFG.speed_kp * (CFG.target_speed - 8))
+    assert cmd.brake == 0.0
+
+
+def test_creep_also_recovers_a_pullout_stuck_halfway_over():
+    # CARLA Town01 oncoming_overtake: stopped 2.1 m over, 1.2 m behind the obstacle.
+    cfg = AvoidanceConfig(lane_width=4.0)
+    state = AvoidanceState(mode=Mode.AVOID, obstacle_odometer=20.0)
+    _, cmd = decide(state, perceive(obstacle_distance=1.2, speed=0.0, adjacent_lane_clear=True,
+                                    lateral_offset=-2.1), cfg)
+    assert cmd.mode == Mode.AVOID and cmd.brake == 0.0 and cmd.throttle > 0.0

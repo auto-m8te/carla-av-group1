@@ -25,10 +25,12 @@ Pipeline per sweep (shared by both):
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Optional
 
 import numpy as np
 
+log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LidarDetectionConfig:
@@ -66,7 +68,7 @@ def _grade_limited(bin_min: np.ndarray, start: int, step: int, max_step: float,
     i = start
     while 0 <= i < bin_min.size:
         lowest = bin_min[i]
-        g = prev + max_step if not np.isfinite(lowest) else min(lowest, prev + max_step)
+        g = prev if not np.isfinite(lowest) else min(lowest, prev + max_step)
         ground[i] = max(g, prev - max_step)  # road cannot drop off a cliff either
         prev = ground[i]
         i += step
@@ -223,3 +225,14 @@ def lane_occupied_points(
         np.add.at(coverage, ends, -1)
         mask[indices] = np.cumsum(coverage[:-1]) > 0
     return mask
+
+
+def nearest_occupied_ahead(
+    points: np.ndarray, cfg: LidarDetectionConfig, lane_path: np.ndarray,
+    lane_width: float, ahead: float = 60.0,
+) -> Optional[float]:
+    """Nearest accepted adjacent-band x beyond the ego front bumper."""
+    pts = _as_points(points)
+    mask = lane_occupied_points(pts, cfg, lane_path, lane_width, ahead=ahead)
+    ahead = pts[mask & (pts[:, 0] > cfg.ego_half_length), 0]
+    return float(ahead.min()) if ahead.size else None

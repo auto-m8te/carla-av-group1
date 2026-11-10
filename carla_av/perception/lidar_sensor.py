@@ -29,9 +29,12 @@ from typing import Optional
 import carla
 import numpy as np
 
-from avoidance.carla_adapter import ADJ_LANE_CHECK_AHEAD, ADJ_LANE_CHECK_BACK, lane_path, lane_path_ahead
+from avoidance.carla_adapter import ADJ_LANE_CHECK_BACK, lane_path, lane_path_ahead
+from avoidance.collision_avoidance import AvoidanceConfig
+from perception.tracking import GapTracker, lane_free_for_manoeuvre
 from perception.obstacle_detection import (
-    CLEAR, Detection, LidarDetectionConfig, detect_obstacle, lane_occupied, lane_occupied_points,
+    CLEAR, Detection, LidarDetectionConfig, detect_obstacle, lane_occupied_points,
+    nearest_occupied_ahead,
 )
 
 log = logging.getLogger("lidar")
@@ -63,8 +66,13 @@ class LidarObstacleDetector:
         config: Optional[LidarDetectionConfig] = None,
         mount: LidarMount = LidarMount(),
         use_map_path: bool = True,
+        avoidance_config: Optional[AvoidanceConfig] = None,
     ) -> None:
         self.map = world.get_map() if use_map_path else None
+        self.world = world
+        self.avoidance_config = avoidance_config or AvoidanceConfig()
+        self._adj_tracker = GapTracker()
+        self._adj_frame: Optional[int] = None
         extent = vehicle.bounding_box.extent
         self.config = replace(
             config or LidarDetectionConfig(),
@@ -163,26 +171,42 @@ class LidarObstacleDetector:
         return self.last_detection.distance
 
     def adjacent_lane_clear(self, home_wp: carla.Waypoint, target_offset: float,
-                            lane_width: float) -> bool:
+                            lane_width: float, behind: float = ADJ_LANE_CHECK_BACK) -> bool:
         """Plug-in for CarlaAvoidanceBridge: is the lane `target_offset` metres beside
-        the home lane free from ADJ_LANE_CHECK_BACK behind to ADJ_LANE_CHECK_AHEAD ahead?
+        the home lane clear over the configured manoeuvre horizon?
         No sweep yet -> not clear (never swerve blind)."""
         self._adj_tag = None
         self._refresh()
         if self._points is None:
             return False
+        ahead = self.avoidance_config.adjacent_detection_range
         path = np.asarray(lane_path(self.vehicle, home_wp, target_offset,
-                                    ahead=ADJ_LANE_CHECK_AHEAD, behind=ADJ_LANE_CHECK_BACK))
+                                    ahead=ahead, behind=behind))
         if len(path) < 2:
             return False
-        if self._tags is not None:
-            mask = lane_occupied_points(self._points, self.config, path, lane_width,
-                                        behind=ADJ_LANE_CHECK_BACK, ahead=ADJ_LANE_CHECK_AHEAD)
-            if mask.any():
-                self._adj_tag = "+".join(str(int(tag)) for tag in np.unique(self._tags[mask]))
-            return not bool(mask.any())
-        return not lane_occupied(self._points, self.config, path, lane_width,
-                                 behind=ADJ_LANE_CHECK_BACK, ahead=ADJ_LANE_CHECK_AHEAD)
+        # Keep the ego's full body protected even when no trailing traffic is checked.
+        rear = -self.config.ego_half_length
+        if behind == 0.0 and path[0, 0] > rear:
+            delta = path[1] - path[0]
+            rear_y = path[0, 1] + (rear - path[0, 0]) * delta[1] / delta[0]
+            path = np.vstack([(rear, rear_y), path])
+        mask = lane_occupied_points(self._points, self.config, path, lane_width,
+                                    behind=max(behind, self.config.ego_half_length), ahead=ahead)
+        if self._tags is not None and mask.any():
+            self._adj_tag = "+".join(str(int(tag)) for tag in np.unique(self._tags[mask]))
+        nearest = nearest_occupied_ahead(self._points, self.config, path, lane_width, ahead=ahead)
+        gap = None if nearest is None else nearest - self.config.ego_half_length
+        velocity = self.vehicle.get_velocity()
+        speed = math.hypot(velocity.x, velocity.y)
+        snapshot = self.world.get_snapshot()
+        if snapshot.frame != self._adj_frame:
+            self._adj_tracker.update(gap, speed, snapshot.timestamp.delta_seconds)
+            self._adj_frame = snapshot.frame
+        if (mask & (self._points[:, 0] <= self.config.ego_half_length + 10.0)).any():
+            return False
+        closing = None if self._adj_tracker.speed is None else speed - self._adj_tracker.speed
+        cfg = self.avoidance_config
+        return lane_free_for_manoeuvre(gap, closing, cfg.manoeuvre_horizon, cfg.manoeuvre_margin)
 
     def debug_tags(self) -> tuple[Optional[int], Optional[str]]:
         """Semantic tags for the nearest detection and last adjacent-lane check."""

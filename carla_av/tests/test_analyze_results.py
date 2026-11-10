@@ -2,6 +2,8 @@
 
 import csv
 
+import pytest
+
 from analysis.analyze_results import analyze
 from avoidance.collision_avoidance import AvoidanceConfig, CollisionAvoidance, Perception
 
@@ -83,3 +85,87 @@ def test_adjacent_lane_disagreement_is_counted(tmp_path):
     path.write_text("\n".join([header] + body) + "\n")
     (m,) = analyze(tmp_path, make_plots=False)
     assert m.adjacent_disagree == 5   # toy run logs adjacent_lane_clear=1 everywhere
+
+
+@pytest.mark.parametrize("scenario,obstacle", [("curve_lane", None), ("curve_stop", 60.0)])
+@pytest.mark.parametrize("failure", [None, "collision", "lane", "moving", "gap"])
+def test_curve_success_rules(tmp_path, scenario, obstacle, failure):
+    path = tmp_path / f"{scenario}_run1.csv"
+    write_toy_run(path, obstacle, False)
+    with path.open(newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    if failure == "collision":
+        rows[-1]["collision"] = "1"
+    elif failure == "lane":
+        rows[0]["lateral_offset"] = "1.0"
+    elif failure == "moving":
+        rows[-1]["speed"] = "1.0"
+    elif failure == "gap":
+        rows[-1]["obstacle_distance"] = "1.0"
+    with path.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    (metric,) = analyze(tmp_path, make_plots=False)
+    failures = {"collision", "lane"} if scenario == "curve_lane" else {"collision", "moving", "gap"}
+    assert metric.success == (failure not in failures)
+    report = (tmp_path / "summary.md").read_text()
+    assert scenario in report
+    assert "empty_lane" not in report and "obstacle_stop" not in report
+
+
+@pytest.mark.parametrize("scenario", ["lead_vehicle", "lead_brake", "oncoming_overtake"])
+@pytest.mark.parametrize("failure", [None, "collision", "gap", "moving", "early"])
+def test_moving_success_rules(tmp_path, scenario, failure):
+    from analysis.analyze_results import compute_metrics, load_rows
+
+    rows = []
+    for i, mode in enumerate(("BRAKE", "STOPPED", "AVOID", "PASSING", "RETURN", "CRUISE")):
+        rows.append(dict(t=i, speed=0.0, lateral_offset=0.0, odometer=i,
+                         obstacle_distance=8.0, collision=False, mode=mode,
+                         gt_obstacle_distance=8.0, adjacent_lane_clear="1",
+                         gt_adjacent_lane_clear="1", other_gap=[30, 20, 21, 30, 40, 50][i]))
+    if failure == "collision":
+        rows[-1]["collision"] = True
+    if failure == "gap":
+        rows[0]["obstacle_distance"] = 1.0
+    if failure == "moving":
+        rows[-1]["speed"] = 1.0
+    if failure == "early":
+        rows[2]["other_gap"] = 19.0
+    path = tmp_path / f"{scenario}_run1.csv"
+    with path.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    metric = compute_metrics("Town01", scenario, 1, load_rows(path))
+    failures = {"collision"}
+    if scenario != "oncoming_overtake":
+        failures.add("gap")
+    if scenario == "lead_brake":
+        failures.add("moving")
+    if scenario == "oncoming_overtake":
+        failures.add("early")
+        assert metric.waited_for_oncoming == (failure != "early")
+    assert metric.success == (failure not in failures)
+    assert scenario in (analyze(tmp_path, make_plots=False)[0].scenario)
+
+
+@pytest.mark.parametrize("gaps,expected", [([20, None], True), ([20, 19], False),
+                                         ([20, 21], True), ([None, 21], False)])
+def test_oncoming_wait_uses_first_avoid_only(gaps, expected):
+    from analysis.analyze_results import waited_for_oncoming
+
+    rows = [{"mode": "STOPPED", "other_gap": gaps[0]},
+            {"mode": "AVOID", "other_gap": gaps[1]},
+            {"mode": "AVOID", "other_gap": 30.0}]
+    assert waited_for_oncoming(rows) == expected
+
+
+def test_abort_counts_as_reaction_and_has_plot_color():
+    from analysis.analyze_results import _reaction, MODE_COLORS
+
+    rows = [dict(t=0.0, mode="CRUISE", obstacle_distance=25.0),
+            dict(t=0.5, mode="ABORT", obstacle_distance=20.0)]
+    assert _reaction(rows) == (20.0, 0.5)
+    assert MODE_COLORS["ABORT"] == "#f6b26b"

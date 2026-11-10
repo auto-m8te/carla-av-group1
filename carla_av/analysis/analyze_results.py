@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import logging
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,8 +25,10 @@ from typing import Optional
 LANE_DEPARTURE_M = 1.0   # |offset| above this while cruising = left the lane
 MIN_STOP_GAP_M = 2.0
 RETURNED_TOL_M = 0.5
-SCENARIO_ORDER = ("empty_lane", "obstacle_stop", "obstacle_avoid")
-FILE_RE = re.compile(r"^(empty_lane|obstacle_stop|obstacle_avoid)_run(\d+)\.csv$")
+log = logging.getLogger(__name__)
+SCENARIO_ORDER = ("empty_lane", "obstacle_stop", "obstacle_avoid", "curve_lane", "curve_stop",
+                  "lead_vehicle", "lead_brake", "oncoming_overtake")
+FILE_RE = re.compile(r"^(" + "|".join(SCENARIO_ORDER) + r")_run(\d+)\.csv$")
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class RunMetrics:
     perception_missed: int = 0                 # ticks where ground truth sees an obstacle, detector not
     perception_false: int = 0                  # ticks where detector sees one, ground truth not
     adjacent_disagree: int = 0                 # ticks where adjacent-lane-free differs from truth
+    waited_for_oncoming: bool = False
 
 
 def load_rows(path: Path) -> list[dict]:
@@ -62,6 +66,9 @@ def load_rows(path: Path) -> list[dict]:
         r["gt_obstacle_distance"] = float(gt) if gt else None
         gt_adj = r.get("gt_adjacent_lane_clear")
         r["gt_adjacent_lane_clear"] = r.get("adjacent_lane_clear") if not gt_adj else gt_adj
+        for key in ("obstacle_speed", "other_speed", "other_gap"):
+            value = r.get(key)
+            r[key] = float(value) if value not in (None, "") else None
     return rows
 
 
@@ -84,6 +91,35 @@ def perception_error(rows: list[dict]) -> tuple[Optional[float], int, int]:
     return (mean(both) if both else None), missed, false
 
 
+def waited_for_oncoming(rows: list[dict]) -> bool:
+    """At first pull-out, the scripted car must be absent or moving away."""
+    for index, row in enumerate(rows):
+        if row["mode"] != "AVOID":
+            continue
+        gap = row.get("other_gap")
+        if gap in (None, ""):
+            return True
+        previous = rows[index - 1].get("other_gap") if index else None
+        return previous not in (None, "") and float(gap) > float(previous)
+    return False
+
+
+def _successful(scenario: str, rows: list[dict], min_gap: Optional[float],
+                lane_max: float, collision: bool) -> bool:
+    if collision:
+        return False
+    if scenario in ("empty_lane", "curve_lane"):
+        return lane_max < LANE_DEPARTURE_M
+    if scenario == "lead_vehicle":
+        return min_gap is not None and min_gap >= MIN_STOP_GAP_M
+    if scenario in ("obstacle_stop", "curve_stop", "lead_brake"):
+        return rows[-1]["speed"] < 0.2 and (min_gap or 0) >= MIN_STOP_GAP_M
+    modes = {r["mode"] for r in rows}
+    completed = ({"AVOID", "PASSING", "RETURN"} <= modes
+                 and abs(rows[-1]["lateral_offset"]) < RETURNED_TOL_M)
+    return completed and (scenario != "oncoming_overtake" or waited_for_oncoming(rows))
+
+
 def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> RunMetrics:
     cruise = [abs(r["lateral_offset"]) for r in rows if r["mode"] == "CRUISE"] or [0.0]
     gaps = [r["obstacle_distance"] for r in rows if r["obstacle_distance"] is not None]
@@ -95,17 +131,7 @@ def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> Run
     mae, missed, false = perception_error(rows)
     adj_disagree = sum(1 for r in rows if r.get("adjacent_lane_clear") != r["gt_adjacent_lane_clear"])
 
-    if scenario == "empty_lane":
-        success = not collision and lane_max < LANE_DEPARTURE_M
-    elif scenario == "obstacle_stop":
-        success = not collision and last["speed"] < 0.2 and (min_gap or 0) >= MIN_STOP_GAP_M
-    else:
-        modes = {r["mode"] for r in rows}
-        success = (
-            not collision
-            and {"AVOID", "PASSING", "RETURN"} <= modes
-            and abs(last["lateral_offset"]) < RETURNED_TOL_M
-        )
+    success = _successful(scenario, rows, min_gap, lane_max, collision)
 
     return RunMetrics(
         town=town,
@@ -124,6 +150,7 @@ def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> Run
         perception_missed=missed,
         perception_false=false,
         adjacent_disagree=adj_disagree,
+        waited_for_oncoming=scenario == "oncoming_overtake" and waited_for_oncoming(rows),
     )
 
 
@@ -158,13 +185,14 @@ def summary_table(metrics: list[RunMetrics]) -> str:
 
 def town_table(metrics: list[RunMetrics]) -> str:
     """Success count per town x scenario."""
+    scenarios = [sc for sc in SCENARIO_ORDER if any(m.scenario == sc for m in metrics)]
     lines = [
-        "| Town | " + " | ".join(SCENARIO_ORDER) + " | Collisions |",
-        "|---|" + "---|" * (len(SCENARIO_ORDER) + 1),
+        "| Town | " + " | ".join(scenarios) + " | Collisions |",
+        "|---|" + "---|" * (len(scenarios) + 1),
     ]
     for town in sorted({m.town for m in metrics}):
         cells = []
-        for sc in SCENARIO_ORDER:
+        for sc in scenarios:
             ms = [m for m in metrics if m.town == town and m.scenario == sc]
             cells.append(f"{sum(m.success for m in ms)}/{len(ms)}" if ms else "-")
         collisions = sum(m.collision for m in metrics if m.town == town)
@@ -221,8 +249,8 @@ def plot_runs(runs: dict[str, list[dict]], out_dir: Path) -> list[Path]:
     return made
 
 
-MODE_COLORS = {"BRAKE": "#f4b183", "STOPPED": "#e06666", "EMERGENCY_STOP": "#990000",
-               "AVOID": "#9fc5e8", "PASSING": "#6fa8dc", "RETURN": "#b6d7a8"}
+MODE_COLORS = {"FOLLOW": "#ffe599", "BRAKE": "#f4b183", "STOPPED": "#e06666", "EMERGENCY_STOP": "#990000",
+               "ABORT": "#f6b26b", "AVOID": "#9fc5e8", "PASSING": "#6fa8dc", "RETURN": "#b6d7a8"}
 
 
 def _shade_modes(axes, rows: list[dict]) -> None:
@@ -266,7 +294,8 @@ def main() -> None:
     ap.add_argument("--no-plots", action="store_true")
     args = ap.parse_args()
     metrics = analyze(Path(args.results), make_plots=not args.no_plots)
-    print(full_report(metrics))
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log.info("%s", full_report(metrics))
 
 
 if __name__ == "__main__":

@@ -24,3 +24,4 @@ carla_av/.pytest-tmp*/
 carla_av/.pytest_cache_*/
 carla_av/.pytest_tmp_*/
 .pytest-tmp*/
+carla_av/.test_*/
