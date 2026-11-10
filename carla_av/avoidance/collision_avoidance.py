@@ -111,6 +111,8 @@ class Perception:
     distance_travelled: float = 0.0      # odometer, metres (used to know when we passed)
     heading_error: float = 0.0           # rad, car yaw minus lane yaw (+ = pointing right)
     obstacle_speed: Optional[float] = None
+    speed_limit: Optional[float] = None
+    near_junction: bool = False
     dt: float = 0.05                     # simulation tick duration, seconds
 
 
@@ -154,7 +156,10 @@ def _steer_to_offset(
 
 def _cruise_throttle(p: Perception, cfg: AvoidanceConfig, speed_factor: float = 1.0) -> float:
     """Feed-forward + P speed controller so the car holds a target speed."""
-    error = cfg.target_speed * speed_factor - p.speed
+    target = cfg.target_speed * speed_factor
+    if p.speed_limit is not None:
+        target = min(target, p.speed_limit)
+    error = target - p.speed
     if error < -1.0:
         return 0.0  # well above target: coast
     return _clamp(cfg.throttle_feedforward + cfg.speed_kp * error, 0.0, cfg.max_throttle)
@@ -294,6 +299,8 @@ def decide(
     state: AvoidanceState, p: Perception, cfg: AvoidanceConfig
 ) -> tuple[AvoidanceState, ControlCommand]:
     """Pure transition function: (state, perception) -> (new_state, command)."""
+    if p.near_junction:
+        p = replace(p, adjacent_lane_clear=False)
     moving = (p.obstacle_distance is not None and p.obstacle_speed is not None
               and p.obstacle_speed > cfg.moving_speed)
     state = replace(state, moving_elapsed=(
@@ -349,7 +356,7 @@ def _road_step(
             _cruise_throttle(p, cfg), p.lane_steer, 0.0, Mode.CRUISE
         )
 
-    if (p.obstacle_speed is not None and p.obstacle_speed > cfg.moving_speed
+    if (not p.near_junction and p.obstacle_speed is not None and p.obstacle_speed > cfg.moving_speed
             and state.moving_elapsed + 1e-9 >= cfg.moving_confirm_time
             and p.distance_travelled >= cfg.moving_min_odometer):
         return replace(state, mode=Mode.FOLLOW), _follow_command(p, cfg)
@@ -365,7 +372,7 @@ def _road_step(
     # confirmed as moving): the passing logic assumes the obstacle stays put, and a
     # lead pulling away would be cut off on the merge back (CARLA lead_vehicle run).
     possibly_moving = p.obstacle_speed is not None and p.obstacle_speed > cfg.moving_speed
-    if dist <= avoid_trigger and p.adjacent_lane_clear and not possibly_moving:
+    if dist <= avoid_trigger and p.adjacent_lane_clear and not possibly_moving and not p.near_junction:
         obstacle_odometer = p.distance_travelled + dist
         new_state = AvoidanceState(mode=Mode.AVOID, obstacle_odometer=obstacle_odometer)
         steer = _steer_to_offset(target_offset, p, cfg, pullout=True)

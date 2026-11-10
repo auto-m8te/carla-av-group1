@@ -24,7 +24,7 @@ import logging
 import math
 import queue
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Callable, Optional
 
 import carla
 import numpy as np
@@ -68,8 +68,10 @@ class LidarObstacleDetector:
         mount: LidarMount = LidarMount(),
         use_map_path: bool = True,
         avoidance_config: Optional[AvoidanceConfig] = None,
+        path_fn: Optional[Callable[[carla.Vehicle, float], list[tuple[float, float]]]] = None,
     ) -> None:
         self.map = world.get_map() if use_map_path else None
+        self.path_fn = path_fn
         self.world = world
         self.avoidance_config = avoidance_config or AvoidanceConfig()
         self._adj_tracker = GapTracker()
@@ -171,7 +173,9 @@ class LidarObstacleDetector:
             return self.last_detection.distance
         pts = self._points
         path = None
-        if self.map is not None:
+        if self.path_fn is not None:
+            path = np.asarray(self.path_fn(vehicle, self.config.max_range + self.config.ego_half_length))
+        elif self.map is not None:
             length = self.config.max_range + self.config.ego_half_length
             path = np.asarray(lane_path_ahead(self.map, vehicle, length))
         if path is not None and len(path) >= 2:

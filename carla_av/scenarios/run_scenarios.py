@@ -37,6 +37,8 @@ from avoidance.collision_avoidance import AvoidanceConfig, CollisionAvoidance, M
 from perception.camera_sensor import CameraLaneModule
 from perception.lidar_sensor import LidarMount, LidarObstacleDetector
 
+from navigation.route_planner import plan_route
+from navigation.route_follower import RouteFollower
 from scenarios.hud_colors import HUD_COLORS
 from scenarios.video_recorder import VideoRecorder
 
@@ -45,6 +47,7 @@ log = logging.getLogger("scenarios")
 SCENARIOS = ("empty_lane", "obstacle_stop", "obstacle_avoid")
 CURVE_SCENARIOS = ("curve_lane", "curve_stop")
 MOVING_SCENARIOS = ("lead_vehicle", "lead_brake", "oncoming_overtake")
+NAVIGATION_SCENARIOS = ("route", "route_obstacle")
 CURVE_WINDOW_M = 80.0
 CURVE_HEADING_RANGE = (45.0, 120.0)
 
@@ -72,6 +75,7 @@ CSV_FIELDS = (
     "obstacle_speed", "other_speed", "other_gap",
     "lane_conf", "lane_offset_cam", "gt_lane_steer",
 )
+NAVIGATION_FIELDS = ("route_progress", "route_remaining", "in_junction", "speed_limit")
 PERCEPTION_SOURCES = ("groundtruth", "lidar")
 
 
@@ -103,6 +107,7 @@ class RunParams:
     lane_debug: Optional[str] = None
     lidar_debug: bool = False
     record_video: Optional[str] = None
+    route: Optional[RouteFollower] = None
     lidar_noise: float = 0.0   # LiDAR range noise std-dev in metres (robustness test)
 
 
@@ -330,8 +335,83 @@ def _spawn_scenario_actors(world: carla.World, start: carla.Waypoint, params: Ru
     return actors
 
 
+def choose_navigation_route(cmap: carla.Map, rng: random.Random) -> RouteFollower:
+    candidates = [w for w in cmap.generate_waypoints(20.0)
+                  if w.lane_type == carla.LaneType.Driving and not w.is_junction]
+    if len(candidates) < 2:
+        raise NoUsableRoad("Too few driving waypoints for navigation")
+    for _ in range(min(300, len(candidates)*3)):
+        start, goal = rng.sample(candidates, 2)
+        try:
+            points = plan_route(cmap,start.transform.location,goal.transform.location)
+        except ValueError:
+            continue
+        if not points:
+            continue
+        route = RouteFollower(points)
+        entries = sum(p.is_junction and (i == 0 or not points[i-1].is_junction)
+                      for i,p in enumerate(points))
+        if 250 <= route.remaining_m <= 450 and entries >= 2:
+            return route
+    raise NoUsableRoad("No usable navigation route (250-450 m, two junctions)")
+
+
+def route_obstacle_index(route, rng: random.Random, near: float = 25.0, far: float = 60.0) -> Optional[int]:
+    """Route index for the parked obstacle: 25-60 m after the exit of SOME junction, with
+    no junction between that exit and 10 m past the obstacle (room to see it and stop)."""
+    points, arc = route.route, route.arc
+    exits = [i for i in range(1, len(points)) if points[i - 1].is_junction and not points[i].is_junction]
+    rng.shuffle(exits)
+    for exit_i in exits:
+        valid = []
+        for i in range(exit_i, len(points)):
+            gap = arc[i] - arc[exit_i]
+            if points[i].is_junction or gap > far:
+                break
+            clear_after = all(not points[k].is_junction for k in range(i, len(points))
+                              if arc[k] - arc[i] <= 10.0)
+            if gap >= near and clear_after:
+                valid.append(i)
+        if valid:
+            return rng.choice(valid)
+    return None
+
+
+def setup_navigation(world: carla.World, params: RunParams,
+                     cfg: AvoidanceConfig, rng: random.Random) -> tuple[list, carla.Waypoint]:
+    route = params.route
+    cmap = world.get_map()
+    def waypoint(index: int) -> carla.Waypoint:
+        p = route.route[index]
+        return cmap.get_waypoint(carla.Location(x=p.x,y=p.y,z=p.z))
+    start = waypoint(0)
+    vehicles = []
+    if params.scenario == "route_obstacle":
+        index = route_obstacle_index(route, rng)
+        if index is None:
+            raise NoUsableRoad("No straight stretch of 25-60 m after any junction on the route")
+        obstacle = waypoint(index)
+        vehicles.append(("vehicle.audi.a2",obstacle))
+        adjacent = _adjacent(obstacle,cfg.avoid_side)
+        if adjacent is not None and adjacent.lane_type == carla.LaneType.Driving:
+            vehicles.append(("vehicle.nissan.patrol",adjacent))
+    actors = []
+    for name,wp in [("vehicle.tesla.model3",start)]+vehicles:
+        actor = spawn_at(world,name,wp)
+        if actor is None:
+            for spawned in actors:
+                spawned.destroy()
+            raise NoUsableRoad("Navigation actor spawn failed")
+        if actors:
+            actor.set_simulate_physics(False)
+        actors.append(actor)
+    return actors,start
+
+
 def setup_scenario(world: carla.World, params: RunParams, cfg: AvoidanceConfig, rng: random.Random):
     """Spawn ego (+ obstacle, + blocker). Returns (actors, start_waypoint)."""
+    if params.route is not None:
+        return setup_navigation(world,params,cfg,rng)
     cmap = world.get_map()
     length = scenario_road_length(params)
     is_curve = params.scenario in CURVE_SCENARIOS
@@ -352,7 +432,9 @@ def setup_scenario(world: carla.World, params: RunParams, cfg: AvoidanceConfig, 
 def is_finished(scenario: str, row: dict, stopped_for: float, passed_m: float) -> bool:
     if row["collision"]:
         return True
-    if scenario in ("obstacle_stop", "curve_stop", "lead_brake"):
+    if scenario == "route":
+        return row.get("route_remaining", float("inf")) <= 5
+    if scenario in ("obstacle_stop", "curve_stop", "lead_brake", "route_obstacle"):
         return stopped_for >= STOP_HOLD_SECONDS
     if scenario in ("obstacle_avoid", "oncoming_overtake"):
         return passed_m >= PASS_DONE_M and row["mode"] == Mode.CRUISE.value
@@ -406,10 +488,10 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
     gt_lane_fn = waypoint_lane_steer(world)
     partial = out.with_suffix(".partial")  # renamed only when the run ends normally
     with partial.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
+        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS + (NAVIGATION_FIELDS if params.route else ()))
         writer.writeheader()
         t, stopped_for = 0.0, 0.0
-        while t < MAX_SECONDS:
+        while t < (90.0 if params.route else MAX_SECONDS):
             tick_start = time.perf_counter()
             if other is not None:
                 other.step()
@@ -437,6 +519,11 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
             row.update(other.log_values(ego) if other is not None else
                        {"other_speed": "", "other_gap": ""})
             row.update(lane_log_values(camera, gt_lane_fn(ego)))
+            if params.route:
+                row.update(route_progress=params.route.progress_m if params.route else "",
+                       route_remaining=params.route.remaining_m if params.route else "",
+                       in_junction=int(params.route.current.is_junction) if params.route else "",
+                       speed_limit=_blank(p.speed_limit))
             writer.writerow(row)
             if recorder is not None:
                 recorder.add_frame(cmd.mode, p.speed, p.obstacle_distance, {
@@ -444,7 +531,9 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                     "lane_source": params.lane_source, "obstacle_source": params.obstacle_source,
                 })
             stopped_for = stopped_for + FIXED_DT if cmd.mode == Mode.STOPPED else 0.0
-            if is_finished(params.scenario, row, stopped_for, p.distance_travelled - params.obstacle_m):
+            if ((params.route.done if params.scenario == "route" else
+                 is_finished(params.scenario, row, stopped_for, p.distance_travelled - params.obstacle_m))
+                    or row["collision"]):
                 break
             follow_camera(world, ego)
             if params.hud:
@@ -515,7 +604,8 @@ def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceC
     detector = None
     if "lidar" in (params.obstacle_source, params.adjacent_source):
         detector = LidarObstacleDetector(world, ego, mount=lidar_mount(params, cfg),
-                                         avoidance_config=cfg)
+                                         avoidance_config=cfg,
+                                         path_fn=params.route.path_ahead if params.route else None)
         actors.append(detector.sensor)
     camera = None
     if params.lane_source == "camera":
@@ -524,12 +614,12 @@ def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceC
         camera = CameraLaneModule(world, ego, debug_dir=debug_dir)
         actors.append(camera.sensor)
     world.tick()
-    gt_fn = ground_truth_obstacle_distance(world)
+    gt_fn = ground_truth_obstacle_distance(world, route=params.route)
     bridge = CarlaAvoidanceBridge(
-        world, ego, cfg, lane_steer_fn=camera, home_waypoint=start,
+        world, ego, cfg, lane_steer_fn=camera, home_waypoint=start, route=params.route,
         obstacle_distance_fn=detector if params.obstacle_source == "lidar" else gt_fn,
         adjacent_clear_fn=detector.adjacent_lane_clear if params.adjacent_source == "lidar" else None,
-        tracking_distance_fn=(ground_truth_obstacle_distance(world, interpolate=True)
+        tracking_distance_fn=(ground_truth_obstacle_distance(world, interpolate=True, route=params.route)
                               if params.obstacle_source == "groundtruth" else None),
     )
     other = None
@@ -563,6 +653,8 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
     actors: list = []
     try:
         try:
+            if params.scenario in NAVIGATION_SCENARIOS:
+                params = replace(params,route=choose_navigation_route(world.get_map(),rng))
             actors, start = setup_scenario(world, params, base_cfg, rng)
         except (NoUsableCurve, NoOncomingRoad, NoUsableRoad) as exc:
             log.warning("%s; skipping run %d", exc, params.run)
@@ -570,11 +662,12 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
         if params.scenario == "curve_stop":
             params = replace(params, obstacle_m=curve_obstacle_distance(start))
         adj = _adjacent(start, base_cfg.avoid_side)
-        lane_gap = start.transform.location.distance(adj.transform.location)
+        lane_gap = (start.transform.location.distance(adj.transform.location)
+                    if adj is not None else base_cfg.lane_width)
         cfg = scenario_config(base_cfg, params, lane_gap)
         out = out_dir / f"{params.scenario}_run{params.run}.csv"
         collision = _drive_actors(world, actors, cfg, params, rng, out, start)
-        oncoming = adj.lane_id * start.lane_id < 0
+        oncoming = adj is not None and adj.lane_id * start.lane_id < 0
         log.info("%s %s run %d: obstacle %.0f m, %.1f m/s, lane %.2f m%s -> collision=%s",
                  params.town, params.scenario, params.run, params.obstacle_m, params.target_speed,
                  lane_gap, " (overtake via oncoming lane)" if oncoming else "", collision)
@@ -590,8 +683,8 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--timeout", type=float, default=180.0,
                     help="seconds to wait for CARLA (map loads on a cold start can exceed 60 s)")
     ap.add_argument("--towns", nargs="+", default=list(DEFAULT_TOWNS))
-    ap.add_argument("--scenario", choices=(*SCENARIOS, *CURVE_SCENARIOS, *MOVING_SCENARIOS,
-                                         "all", "curves", "moving", "everything"), default="all")
+    ap.add_argument("--scenario", choices=(*SCENARIOS, *CURVE_SCENARIOS, *MOVING_SCENARIOS, *NAVIGATION_SCENARIOS,
+                                         "all", "curves", "moving", "navigation", "everything"), default="all")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--first-run", type=int, default=1, help="start numbering at this run (re-run one seed)")
     ap.add_argument("--out", default="results")
@@ -620,7 +713,8 @@ def main() -> None:
     client.set_timeout(args.timeout)
     base_cfg = AvoidanceConfig()
     groups = {"all": SCENARIOS, "curves": CURVE_SCENARIOS, "moving": MOVING_SCENARIOS,
-              "everything": SCENARIOS + CURVE_SCENARIOS + MOVING_SCENARIOS}
+              "navigation": NAVIGATION_SCENARIOS,
+              "everything": SCENARIOS + CURVE_SCENARIOS + MOVING_SCENARIOS + NAVIGATION_SCENARIOS}
     scenarios = groups.get(args.scenario, (args.scenario,))
     for town in args.towns:
         # Reloading the map that is already loaded has crashed CARLA 0.9.16 on Windows.

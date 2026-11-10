@@ -27,7 +27,7 @@ MIN_STOP_GAP_M = 2.0
 RETURNED_TOL_M = 0.5
 log = logging.getLogger(__name__)
 SCENARIO_ORDER = ("empty_lane", "obstacle_stop", "obstacle_avoid", "curve_lane", "curve_stop",
-                  "lead_vehicle", "lead_brake", "oncoming_overtake")
+                  "lead_vehicle", "lead_brake", "oncoming_overtake", "route", "route_obstacle")
 FILE_RE = re.compile(r"^(" + "|".join(SCENARIO_ORDER) + r")_run(\d+)\.csv$")
 
 
@@ -52,6 +52,10 @@ class RunMetrics:
     lane_conf_mean: Optional[float] = None
     lane_lost_ticks: int = 0
     waited_for_oncoming: bool = False
+    route_length_m: Optional[float] = None
+    junctions_passed: Optional[int] = None
+    time_s: Optional[float] = None
+    mean_speed: Optional[float] = None
 
 
 def load_rows(path: Path) -> list[dict]:
@@ -68,7 +72,7 @@ def load_rows(path: Path) -> list[dict]:
         r["gt_obstacle_distance"] = float(gt) if gt else None
         gt_adj = r.get("gt_adjacent_lane_clear")
         r["gt_adjacent_lane_clear"] = r.get("adjacent_lane_clear") if not gt_adj else gt_adj
-        for key in ("obstacle_speed", "other_speed", "other_gap", "lane_conf"):
+        for key in ("obstacle_speed", "other_speed", "other_gap", "lane_conf", "route_progress", "route_remaining", "in_junction", "speed_limit"):
             value = r.get(key)
             r[key] = float(value) if value not in (None, "") else None
     return rows
@@ -115,11 +119,14 @@ def _successful(scenario: str, rows: list[dict], min_gap: Optional[float],
                 lane_max: float, collision: bool) -> bool:
     if collision:
         return False
+    if scenario == "route":
+        outside = [abs(r["lateral_offset"]) for r in rows if not r.get("in_junction")]
+        return float(rows[-1].get("route_remaining", math.inf)) <= 5 and max(outside,default=0) < 1.5
     if scenario in ("empty_lane", "curve_lane"):
         return lane_max < LANE_DEPARTURE_M
     if scenario == "lead_vehicle":
         return min_gap is not None and min_gap >= MIN_STOP_GAP_M
-    if scenario in ("obstacle_stop", "curve_stop", "lead_brake"):
+    if scenario in ("obstacle_stop", "curve_stop", "lead_brake", "route_obstacle"):
         return rows[-1]["speed"] < 0.2 and (min_gap or 0) >= MIN_STOP_GAP_M
     modes = {r["mode"] for r in rows}
     completed = ({"AVOID", "PASSING", "RETURN"} <= modes
@@ -129,6 +136,8 @@ def _successful(scenario: str, rows: list[dict], min_gap: Optional[float],
 
 def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> RunMetrics:
     cruise = [abs(r["lateral_offset"]) for r in rows if r["mode"] == "CRUISE"] or [0.0]
+    if scenario == "route":
+        cruise = [abs(r["lateral_offset"]) for r in rows if not r.get("in_junction")] or [0.0]
     gaps = [r["obstacle_distance"] for r in rows if r["obstacle_distance"] is not None]
     collision = any(r["collision"] for r in rows)
     last = rows[-1]
@@ -160,6 +169,12 @@ def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> Run
         perception_missed=missed,
         perception_false=false,
         adjacent_disagree=adj_disagree,
+        route_length_m=(float(last["route_progress"])+float(last["route_remaining"])
+                        if last.get("route_progress") is not None else None),
+        junctions_passed=(sum(bool(a.get("in_junction")) and not bool(b.get("in_junction"))
+                              for a,b in zip(rows,rows[1:])) if scenario.startswith("route") else None),
+        time_s=last["t"] if scenario.startswith("route") else None,
+        mean_speed=mean(r["speed"] for r in rows) if scenario.startswith("route") else None,
         waited_for_oncoming=scenario == "oncoming_overtake" and waited_for_oncoming(rows),
     )
 
@@ -229,6 +244,14 @@ def full_report(metrics: list[RunMetrics]) -> str:
     if any(m.lane_conf_mean is not None or m.perception_mae_m or m.perception_missed or m.perception_false or m.adjacent_disagree
            for m in metrics):
         report += "\n### Obstacle detection vs ground truth\n\n" + perception_table(metrics)
+    if any(m.route_length_m is not None for m in metrics):
+        report += "\n### Navigation\n\n| Scenario | Route length (m) | Junctions passed | Time (s) | Mean speed (m/s) |\n|---|---|---|---|---|\n"
+        for sc in ("route", "route_obstacle"):
+            ms = [m for m in metrics if m.scenario == sc]
+            if ms:
+                report += (f"| {sc} | {_fmt([m.route_length_m for m in ms])} "
+                           f"| {_fmt([m.junctions_passed for m in ms])} | {_fmt([m.time_s for m in ms])} "
+                           f"| {_fmt([m.mean_speed for m in ms])} |\n")
     return report
 
 

@@ -88,7 +88,7 @@ python -m scenarios.run_scenarios --scenario curves --towns Town03 Town04 --runs
 ```
 
 `--scenario all` retains the original three scenarios. `--scenario curves`
-runs both curve scenarios; `--scenario everything` runs all eight. Each curve
+runs both curve scenarios; `--scenario everything` runs all ten. Each curve
 scenario can also be selected by name. Analysis applies the lane-following
 success rule to `curve_lane` and the stopping success rule to `curve_stop`.
 
@@ -255,3 +255,38 @@ Join selected clips in the given order with one-second black separators:
 ```
 
 All reel inputs must have the same dimensions and frame rate.
+
+## Navigation
+
+`navigation/route_planner.py` builds a directed topology graph and uses Dijkstra
+without networkx. Segment endpoints connect within 0.5 m; parallel driving lanes
+can connect outside junctions with a 30 m lane-change penalty. Routes are sampled
+with `Waypoint.next(2.0)` and stored as frozen `RoutePoint` values.
+`RouteFollower` tracks progress, steers toward a 6 m lookahead, and supplies the
+route corridor to ground-truth and LiDAR obstacle detection. Route geometry
+also supplies the lateral-offset reference through intersections and turns.
+
+The speed target is capped at 5 m/s within 20 m of a junction and inside one,
+and at 4 m/s for heading changes over 45 degrees within 15 m. Overtaking cannot
+start within 25 m of a junction or inside it; obstacles use stopping logic there.
+
+`route` selects a seeded 250–450 m route with at least two junctions and runs
+until within 5 m of the goal or 90 seconds. `route_obstacle` parks a car
+30–50 m after the first junction exit and blocks the avoidance-side lane when
+available; it ends after holding stopped for three seconds. Unusable routes or
+spawn locations produce a warning and skip. Navigation runs append
+`route_progress`, `route_remaining`, `in_junction`, and `speed_limit` to CSVs.
+Analysis checks goal completion and offsets below 1.5 m outside junctions for
+`route`, or a stopped vehicle with minimum gap at least 2 m for `route_obstacle`;
+both require no collisions. Reports include route length, junctions passed,
+time, and mean speed. Simulator validation is still required.
+
+```powershell
+.venv/Scripts/python.exe -m scenarios.run_scenarios --scenario navigation --towns Town03 --runs 5
+.venv/Scripts/python.exe -m scenarios.run_scenarios --scenario route_obstacle --towns Town03 --runs 1 --obstacle lidar
+.venv/Scripts/python.exe -m analysis.analyze_results --results results
+.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=.test_tmp_nav
+```
+
+`--scenario everything` includes navigation. `--scenario all` retains the
+original three scenarios and their CSV layout and timeout.

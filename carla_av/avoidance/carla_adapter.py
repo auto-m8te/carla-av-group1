@@ -22,6 +22,7 @@ from typing import Callable, Optional
 import carla  # requires CARLA PythonAPI (Python 3.8-3.12)
 
 from avoidance.collision_avoidance import AvoidanceConfig, ControlCommand, Mode, Perception
+from navigation.route_follower import RouteFollower
 from perception.tracking import Debounce, GapTracker, lane_free_for_manoeuvre
 
 log = logging.getLogger(__name__)
@@ -130,13 +131,16 @@ def _nearest_sample(wp: carla.Waypoint, loc: carla.Location, step_m: float,
 
 
 def ground_truth_obstacle_distance(world: carla.World, step_m: float = 1.0,
-                                   interpolate: bool = False) -> ObstacleFn:
+                                   interpolate: bool = False,
+                                   route: Optional[RouteFollower] = None) -> ObstacleFn:
     """Fallback obstacle module (stands in for Abir's LiDAR module).
 
     Walks the car's lane forward (so it works on curves) and reports the gap to the
     nearest vehicle whose body overlaps the car's predicted path.
     """
     cmap = world.get_map()
+    if route is not None:
+        return route_obstacle_distance(world, route)
 
     def fn(vehicle: carla.Vehicle) -> Optional[float]:
         wp, reverse = _travel_waypoint(cmap, vehicle)
@@ -176,6 +180,33 @@ def ground_truth_obstacle_distance(world: carla.World, step_m: float = 1.0,
     return fn
 
 
+def route_obstacle_distance(world: carla.World, route: RouteFollower) -> ObstacleFn:
+    """Project actor centres onto the route polyline and subtract bumper extents."""
+    def fn(vehicle: carla.Vehicle) -> Optional[float]:
+        route.update(vehicle)
+        nearest = None
+        for actor in world.get_actors().filter("vehicle.*"):
+            if actor.id == vehicle.id:
+                continue
+            loc = actor.get_location()
+            best = (math.inf, 0.0)
+            for i in range(route.index, len(route.route)-1):
+                a, b = route.route[i:i+2]
+                dx, dy = b.x-a.x, b.y-a.y
+                square = dx*dx+dy*dy
+                t = max(0.0,min(1.0,((loc.x-a.x)*dx+(loc.y-a.y)*dy)/square)) if square else 0.0
+                lateral = math.hypot(loc.x-a.x-t*dx,loc.y-a.y-t*dy)
+                arc = route.arc[i]+t*(route.arc[i+1]-route.arc[i])-route.progress_m
+                if lateral < best[0] and 0 < arc <= DETECTION_RANGE:
+                    best = lateral, arc
+            overlap = vehicle.bounding_box.extent.y+actor.bounding_box.extent.y+PATH_MARGIN
+            if best[0] < overlap:
+                gap = best[1]-vehicle.bounding_box.extent.x-actor.bounding_box.extent.x
+                nearest = gap if nearest is None else min(nearest,gap)
+        return nearest
+    return fn
+
+
 def waypoint_lane_steer(world: carla.World, lookahead: float = 6.0) -> LaneSteerFn:
     """Fallback lane module (stands in for Adil's camera module): pure pursuit
     toward the lane centre ahead, in the car's direction of travel."""
@@ -204,15 +235,19 @@ class CarlaAvoidanceBridge:
         adjacent_clear_fn: Optional[AdjacentClearFn] = None,
         tracking_distance_fn: Optional[ObstacleFn] = None,
         home_waypoint: Optional[carla.Waypoint] = None,
+        route: Optional[RouteFollower] = None,
     ) -> None:
         self.world = world
         self.map = world.get_map()
         self.vehicle = vehicle
         self.config = config
-        self.lane_steer_fn = lane_steer_fn or waypoint_lane_steer(world)
-        self.obstacle_distance_fn = obstacle_distance_fn or ground_truth_obstacle_distance(world)
+        self.route = route
+        self.lane_steer_fn = lane_steer_fn or (route.steer if route else waypoint_lane_steer(world))
+        self.obstacle_distance_fn = obstacle_distance_fn or ground_truth_obstacle_distance(world, route=route)
+        if route is not None and hasattr(self.obstacle_distance_fn, "path_fn"):
+            self.obstacle_distance_fn.path_fn = route.path_ahead
         self.tracking_distance_fn = tracking_distance_fn or (
-            ground_truth_obstacle_distance(world, interpolate=True)
+            ground_truth_obstacle_distance(world, interpolate=True, route=route)
             if obstacle_distance_fn is None else self.obstacle_distance_fn)
         self.adjacent_clear_fn = adjacent_clear_fn  # None -> ground truth
         self._home_wp: Optional[carla.Waypoint] = home_waypoint
@@ -239,6 +274,11 @@ class CarlaAvoidanceBridge:
         loses the home lane mid-manoeuvre.)
         """
         loc = self.vehicle.get_location()
+        if self.route is not None:
+            self.route.update(self.vehicle)
+            point = self.route.current
+            location = carla.Location(x=point.x,y=point.y,z=point.z)
+            return self.map.get_waypoint(location)
         if self._home_wp is None:
             self._home_wp = self.map.get_waypoint(loc)
             return self._home_wp
@@ -256,6 +296,12 @@ class CarlaAvoidanceBridge:
         self._home_wp = self.map.get_waypoint(self.vehicle.get_location())
 
     def lateral_offset(self) -> float:
+        if self.route is not None:
+            self.route.update(self.vehicle)
+            point = self.route.current
+            loc = self.vehicle.get_location()
+            yaw = math.radians(point.yaw)
+            return -(loc.x-point.x)*math.sin(yaw)+(loc.y-point.y)*math.cos(yaw)
         wp = self._home_waypoint()
         d = self.vehicle.get_location() - wp.transform.location
         r = wp.transform.get_right_vector()
@@ -263,7 +309,8 @@ class CarlaAvoidanceBridge:
 
     def heading_error(self) -> float:
         """Car yaw minus lane yaw, radians, wrapped to [-pi, pi] (+ = pointing right)."""
-        lane_yaw = self._home_waypoint().transform.rotation.yaw
+        lane_yaw = (self.route.current.yaw if self.route is not None
+                    else self._home_waypoint().transform.rotation.yaw)
         car_yaw = self.vehicle.get_transform().rotation.yaw
         diff = math.radians(car_yaw - lane_yaw)
         return math.atan2(math.sin(diff), math.cos(diff))
@@ -337,6 +384,8 @@ class CarlaAvoidanceBridge:
 
     def perceive(self) -> Perception:
         loc = self.vehicle.get_location()
+        if self.route is not None:
+            self.route.update(self.vehicle)
         if self._last_location is not None:
             self.odometer += loc.distance(self._last_location)
         self._last_location = loc
@@ -357,6 +406,9 @@ class CarlaAvoidanceBridge:
             lateral_offset=self.lateral_offset(),
             distance_travelled=self.odometer,
             heading_error=self.heading_error(),
+            speed_limit=self.route.speed_limit() if self.route else None,
+            near_junction=(self.route.next_junction_distance() is not None
+                           and self.route.next_junction_distance() < 25) if self.route else False,
         )
 
     def apply(self, cmd: ControlCommand) -> None:
