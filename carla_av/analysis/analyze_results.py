@@ -74,10 +74,11 @@ def load_rows(path: Path) -> list[dict]:
     return rows
 
 
-def _reaction(rows: list[dict]) -> tuple[Optional[float], Optional[float]]:
-    """Distance to obstacle and time since first detection when we first left CRUISE."""
+def _reaction(rows: list[dict], scenario: str = "") -> tuple[Optional[float], Optional[float]]:
+    """First avoidance reaction; FOLLOW counts only for lead scenarios."""
     first_seen = next((r for r in rows if r["obstacle_distance"] is not None), None)
-    first_act = next((r for r in rows if r["mode"] != "CRUISE"), None)
+    cruise_like = {"CRUISE"} if scenario.startswith("lead_") else {"CRUISE", "FOLLOW"}
+    first_act = next((r for r in rows if r["mode"] not in cruise_like), None)
     if first_seen is None or first_act is None:
         return None, None
     return first_act["obstacle_distance"], first_act["t"] - first_seen["t"]
@@ -127,7 +128,7 @@ def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> Run
     gaps = [r["obstacle_distance"] for r in rows if r["obstacle_distance"] is not None]
     collision = any(r["collision"] for r in rows)
     last = rows[-1]
-    reaction_d, reaction_t = _reaction(rows)
+    reaction_d, reaction_t = _reaction(rows, scenario)
     min_gap = min(gaps) if gaps else None
     lane_max = max(cruise)
     mae, missed, false = perception_error(rows)

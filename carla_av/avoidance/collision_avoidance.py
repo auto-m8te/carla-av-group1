@@ -74,6 +74,8 @@ class AvoidanceConfig:
     pass_clear_distance: float = 6.0  # distance driven past obstacle before returning
     stopped_speed: float = 0.2
     avoid_side: int = -1              # -1 = left lane, +1 = right lane
+    moving_confirm_time: float = 0.5
+    moving_min_odometer: float = 3.0
     moving_speed: float = 1.0
     standstill_gap: float = 6.0
     time_gap: float = 1.8
@@ -109,6 +111,7 @@ class Perception:
     distance_travelled: float = 0.0      # odometer, metres (used to know when we passed)
     heading_error: float = 0.0           # rad, car yaw minus lane yaw (+ = pointing right)
     obstacle_speed: Optional[float] = None
+    dt: float = 0.05                     # simulation tick duration, seconds
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,7 @@ class ControlCommand:
 class AvoidanceState:
     mode: Mode = Mode.CRUISE
     obstacle_odometer: Optional[float] = None   # odometer value at the obstacle position
+    moving_elapsed: float = 0.0
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -290,6 +294,10 @@ def decide(
     state: AvoidanceState, p: Perception, cfg: AvoidanceConfig
 ) -> tuple[AvoidanceState, ControlCommand]:
     """Pure transition function: (state, perception) -> (new_state, command)."""
+    moving = (p.obstacle_distance is not None and p.obstacle_speed is not None
+              and p.obstacle_speed > cfg.moving_speed)
+    state = replace(state, moving_elapsed=(
+        state.moving_elapsed + max(0.0, p.dt) if moving else 0.0))
     dist = p.obstacle_distance
     blocked = dist is not None
     target_offset = cfg.avoid_side * cfg.lane_width
@@ -341,8 +349,10 @@ def _road_step(
             _cruise_throttle(p, cfg), p.lane_steer, 0.0, Mode.CRUISE
         )
 
-    if p.obstacle_speed is not None and p.obstacle_speed > cfg.moving_speed:
-        return AvoidanceState(mode=Mode.FOLLOW), _follow_command(p, cfg)
+    if (p.obstacle_speed is not None and p.obstacle_speed > cfg.moving_speed
+            and state.moving_elapsed + 1e-9 >= cfg.moving_confirm_time
+            and p.distance_travelled >= cfg.moving_min_odometer):
+        return replace(state, mode=Mode.FOLLOW), _follow_command(p, cfg)
 
     # Hysteresis: hold near a stationary obstacle to prevent stop-go oscillation.
     braking_modes = (Mode.BRAKE, Mode.STOPPED, Mode.EMERGENCY_STOP)

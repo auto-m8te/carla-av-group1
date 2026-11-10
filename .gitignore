@@ -25,3 +25,5 @@ carla_av/.pytest_cache_*/
 carla_av/.pytest_tmp_*/
 .pytest-tmp*/
 carla_av/.test_*/
+data/
+carla_av/results_full_lidar/

@@ -104,8 +104,12 @@ by name). `--scenario all` continues to select the original three scenarios.
 - `lead_vehicle`: a car 30–40 m ahead drives at 40–60% of the ego target
   speed. Ego follows until it has driven 120 m. Success requires no collision
   and a minimum bumper gap of 2 m.
-- `lead_brake`: the same lead stops after driving 40 m; a parked adjacent-lane
-  blocker starts 50–60 m ahead of ego. The run ends after ego holds stopped
+- `lead_brake`: after driving 40 m, the same lead ramps its target speed down
+  at 3 m/s², tracked by the P speed controller; full brake holds the stop only
+  below 0.3 m/s. A parked adjacent-lane blocker sits beside the planned stop:
+  lead start + 40 m + 8 m braking allowance, clamped to the usable road length.
+  The road must extend at least 20 m beyond this planned position.
+  The run ends after ego holds stopped
   for 3 s. Success requires no collision, final speed below 0.2 m/s and a
   minimum gap of 2 m.
 - `oncoming_overtake`: a parked obstacle 35–55 m ahead and an oncoming car

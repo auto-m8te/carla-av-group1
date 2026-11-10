@@ -90,6 +90,62 @@ def test_scripted_speed_controller():
     assert scripted_speed_control(0.0, 4.0) == (0.75, 0.0)
     assert scripted_speed_control(5.0, 4.0) == (0.0, 0.4)
     assert scripted_speed_control(0.0, 0.0) == (0.0, 1.0)
+    assert scripted_speed_control(0.5, 0.0) == (0.0, 0.2)
+    assert scripted_speed_control(0.3, 0.0) == (0.0, 0.12)
+    assert scripted_speed_control(0.29, 0.0) == (0.0, 1.0)
+
+
+@pytest.mark.parametrize("lead_start,length,expected", [
+    (30.0, 140.0, 78.0), (40.0, 140.0, 88.0),
+    (35.0, 80.0, 80.0), (35.0, 83.0, 83.0),
+])
+def test_lead_brake_blocker_distance(lead_start, length, expected):
+    from scenarios.run_scenarios import lead_brake_blocker_distance
+
+    assert lead_brake_blocker_distance(lead_start, length) == expected
+
+
+def test_scripted_deceleration_profile():
+    from scenarios.run_scenarios import scripted_deceleration_target
+
+    previous = 6.0
+    for _ in range(40):
+        target = scripted_deceleration_target(previous, 0.05)
+        assert target == pytest.approx(max(0.0, previous - 0.15))
+        previous = target
+    assert previous == pytest.approx(0.0, abs=1e-12)
+    assert scripted_deceleration_target(0.1, 0.1) == 0.0
+    assert scripted_deceleration_target(0.0, 0.05) == 0.0
+    assert scripted_deceleration_target(6.0, 0.0) == 6.0
+    assert scripted_deceleration_target(6.0, 0.2) == pytest.approx(5.4)
+
+
+def test_lead_brake_road_covers_blocker_and_margin():
+    from scenarios.run_scenarios import RunParams, scenario_road_length
+
+    for lead_start in (30.0, 40.0, 120.0):
+        params = RunParams("Town01", "lead_brake", 1, lead_start, 8.0)
+        assert scenario_road_length(params) >= lead_start + 40.0 + 8.0 + 20.0
+
+
+def test_scripted_driver_tracks_ramp_each_tick(monkeypatch):
+    import scenarios.run_scenarios as runner
+
+    targets = []
+    actor = SimpleNamespace(get_location=lambda: SimpleNamespace(distance=lambda other: 0.0),
+                            apply_control=lambda control: None)
+    monkeypatch.setattr(runner, "waypoint_lane_steer", lambda world: lambda actor: 0.0)
+    monkeypatch.setattr(runner, "ground_truth_obstacle_distance", lambda world: lambda actor: None)
+    monkeypatch.setattr(runner, "speed_of", lambda actor: 6.0)
+    monkeypatch.setattr(runner, "scripted_speed_control",
+                        lambda speed, target: (targets.append(target) or 0.0, 0.0))
+    driver = runner.ScriptedDriver(None, actor, "lead_brake", 6.0)
+    driver.travelled = 39.9
+    driver.step()
+    driver.travelled = 40.0
+    driver.step()
+    driver.step()
+    assert targets == pytest.approx([6.0, 5.85, 5.70])
 
 
 @pytest.mark.parametrize("scenario,distance,expected", [
@@ -127,8 +183,7 @@ def test_scripted_actor_placement(scenario, moving, blocker):
     assert [entry[2] for entry in vehicles] == moving
     assert vehicles[0][1].x == 35.0
     if blocker:
-        assert 50.0 <= vehicles[1][1].x <= 60.0
-        assert vehicles[1][1].x == params.obstacle_m + 20.0
+        assert vehicles[1][1].x == params.obstacle_m + 40.0 + 8.0
     if scenario == "oncoming_overtake":
         assert 75.0 <= vehicles[1][1].x <= 95.0
         assert vehicles[1][1].lane_id > 0
@@ -145,7 +200,8 @@ def test_scenario_configuration_preserves_legacy_settings(scenario):
     cfg = scenario_config(base, params, 3.7)
     assert cfg.target_speed == 7.0 and cfg.lane_width == 3.7
     if scenario in MOVING_SCENARIOS:
-        assert cfg.safety_margin == 6.0 and cfg.adjacent_detection_range == 180.0
+        assert cfg.safety_margin == (10.0 if scenario == "oncoming_overtake" else 6.0)
+        assert cfg.adjacent_detection_range == 180.0
     else:
         assert cfg.safety_margin == base.safety_margin
         assert cfg.adjacent_detection_range == base.adjacent_detection_range

@@ -185,3 +185,16 @@ def test_camera_lane_metrics(tmp_path):
     report = (tmp_path / 'summary.md').read_text()
     assert 'Lane conf (mean)' in report
     assert 'Lane lost ticks' in report
+
+
+@pytest.mark.parametrize("scenario,expected", [
+    ("obstacle_stop", (15.0, 1.0)), ("curve_stop", (15.0, 1.0)),
+    ("oncoming_overtake", (15.0, 1.0)),
+    ("lead_vehicle", (25.0, 0.1)), ("lead_brake", (25.0, 0.1)),
+])
+def test_reaction_follow_is_cruise_like_only_for_static_scenarios(scenario, expected):
+    from analysis.analyze_results import _reaction
+    rows = [dict(t=0.0, mode="CRUISE", obstacle_distance=30.0),
+            dict(t=0.1, mode="FOLLOW", obstacle_distance=25.0),
+            dict(t=1.0, mode="BRAKE", obstacle_distance=15.0)]
+    assert _reaction(rows, scenario) == expected

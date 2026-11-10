@@ -215,15 +215,15 @@ def test_controller_wrapper_tracks_state_and_resets():
 
 @pytest.mark.parametrize("mode", [Mode.CRUISE, Mode.BRAKE, Mode.STOPPED])
 def test_moving_lead_follows_and_never_starts_avoid(mode):
-    state, cmd = decide(AvoidanceState(mode=mode), perceive(
-        obstacle_distance=20.0, obstacle_speed=4.0, adjacent_lane_clear=True), CFG)
+    state, cmd = decide(AvoidanceState(mode=mode, moving_elapsed=CFG.moving_confirm_time), perceive(
+        obstacle_distance=20.0, obstacle_speed=4.0, adjacent_lane_clear=True, distance_travelled=3.0), CFG)
     assert state.mode == cmd.mode == Mode.FOLLOW
 
 
 def test_follow_brakes_for_speed_error_and_ttc():
     for gap in (6.0, 20.0):
-        _, cmd = decide(AvoidanceState(), perceive(
-            obstacle_distance=gap, obstacle_speed=2.0), CFG)
+        _, cmd = decide(AvoidanceState(moving_elapsed=CFG.moving_confirm_time), perceive(
+            obstacle_distance=gap, obstacle_speed=2.0, distance_travelled=3.0), CFG)
         assert cmd.mode == Mode.FOLLOW and cmd.brake > 0 and cmd.throttle == 0
 
 
@@ -310,3 +310,37 @@ def test_creep_also_recovers_a_pullout_stuck_halfway_over():
     _, cmd = decide(state, perceive(obstacle_distance=1.2, speed=0.0, adjacent_lane_clear=True,
                                     lateral_offset=-2.1), cfg)
     assert cmd.mode == Mode.AVOID and cmd.brake == 0.0 and cmd.throttle > 0.0
+
+
+def test_spawn_motion_blip_never_follows():
+    ctrl = CollisionAvoidance()
+    for _ in range(5):
+        assert ctrl.step(perceive(obstacle_distance=60.0, obstacle_speed=1.6,
+                                 distance_travelled=0.5)).mode == Mode.CRUISE
+
+
+def test_lead_requires_continuous_confirmation_and_odometer():
+    ctrl = CollisionAvoidance()
+    for _ in range(9):
+        assert ctrl.step(perceive(obstacle_distance=60.0, obstacle_speed=4.0,
+                                 distance_travelled=4.0)).mode == Mode.CRUISE
+    for _ in range(3):
+        cmd = ctrl.step(perceive(obstacle_distance=60.0, obstacle_speed=4.0,
+                                distance_travelled=4.0))
+    assert cmd.mode == Mode.FOLLOW
+    ctrl.reset()
+    for _ in range(20):
+        assert ctrl.step(perceive(obstacle_distance=60.0, obstacle_speed=4.0,
+                                 distance_travelled=2.9)).mode != Mode.FOLLOW
+
+
+@pytest.mark.parametrize("gap,speed", [(None, 4.0), (60.0, None), (60.0, 1.0)])
+def test_motion_confirmation_resets(gap, speed):
+    ctrl = CollisionAvoidance()
+    for _ in range(8):
+        ctrl.step(perceive(obstacle_distance=60.0, obstacle_speed=4.0, distance_travelled=4.0))
+    ctrl.step(perceive(obstacle_distance=gap, obstacle_speed=speed, distance_travelled=4.0))
+    assert ctrl.state.moving_elapsed == 0.0
+    for _ in range(8):
+        assert ctrl.step(perceive(obstacle_distance=60.0, obstacle_speed=4.0,
+                                 distance_travelled=4.0)).mode == Mode.CRUISE

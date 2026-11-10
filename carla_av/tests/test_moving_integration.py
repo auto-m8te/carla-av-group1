@@ -233,3 +233,16 @@ def test_lidar_zero_lookbehind_keeps_bumper_band(monkeypatch, x, expected):
     detector._points = np.vstack([road, car])
     assert detector.adjacent_lane_clear(Waypoint(), -3.5, 3.5, 0.0) == expected
     assert path_calls[0]["behind"] == 0.0
+
+
+def test_explicit_home_waypoint_avoids_spawn_lane_lookup():
+    ego = Vehicle(1, 0, 0)
+    world = make_world([ego])
+    home, wrong = Waypoint(), Waypoint()
+    wrong.transform.location.y = 7.0
+    calls = []
+    world.get_map().get_waypoint = lambda loc: calls.append(loc) or wrong
+    bridge = CarlaAvoidanceBridge(world, ego, AvoidanceConfig(), home_waypoint=home)
+    assert bridge._home_waypoint() is home
+    assert bridge.lateral_offset() == 0.0
+    assert calls == []

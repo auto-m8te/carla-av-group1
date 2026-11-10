@@ -203,6 +203,7 @@ class CarlaAvoidanceBridge:
         obstacle_distance_fn: Optional[ObstacleFn] = None,
         adjacent_clear_fn: Optional[AdjacentClearFn] = None,
         tracking_distance_fn: Optional[ObstacleFn] = None,
+        home_waypoint: Optional[carla.Waypoint] = None,
     ) -> None:
         self.world = world
         self.map = world.get_map()
@@ -214,7 +215,7 @@ class CarlaAvoidanceBridge:
             ground_truth_obstacle_distance(world, interpolate=True)
             if obstacle_distance_fn is None else self.obstacle_distance_fn)
         self.adjacent_clear_fn = adjacent_clear_fn  # None -> ground truth
-        self._home_wp: Optional[carla.Waypoint] = None
+        self._home_wp: Optional[carla.Waypoint] = home_waypoint
         self.odometer = 0.0
         # Set lazily: before the first world.tick() a new actor reports (0,0,0).
         self._last_location: Optional[carla.Location] = None
@@ -350,6 +351,7 @@ class CarlaAvoidanceBridge:
             lane_steer=self.lane_steer_fn(self.vehicle),
             obstacle_distance=gap,
             obstacle_speed=self._obstacle_tracker.speed,
+            dt=snapshot.timestamp.delta_seconds,
             speed=speed,
             adjacent_lane_clear=self.adjacent_lane_clear(),
             lateral_offset=self.lateral_offset(),

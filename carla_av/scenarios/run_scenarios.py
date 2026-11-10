@@ -55,6 +55,9 @@ EMPTY_LANE_M = 100.0
 OBSTACLE_RANGE_M = (35.0, 55.0)
 TARGET_SPEED_RANGE = (6.0, 10.0)   # m/s, ~22-36 km/h urban speeds
 ROAD_AFTER_OBSTACLE_M = 45.0       # room needed to pass and merge back
+LEAD_DRIVE_M = 40.0
+LEAD_BRAKING_M = 8.0
+LEAD_DECEL_MPS2 = 3.0
 PROBE_STEP_M = 5.0
 MAX_HEADING_CHANGE_DEG = 25.0      # mild curves allowed, no sharp turns
 CSV_FIELDS = (
@@ -67,6 +70,10 @@ CSV_FIELDS = (
     "lane_conf", "lane_offset_cam", "gt_lane_steer",
 )
 PERCEPTION_SOURCES = ("groundtruth", "lidar")
+
+
+class NoUsableRoad(RuntimeError):
+    """No road stretch in this town satisfies the scenario's layout requirements."""
 
 
 class NoUsableCurve(RuntimeError):
@@ -97,7 +104,7 @@ class RunParams:
 
 def scripted_speed_control(speed: float, target: float) -> tuple[float, float]:
     """Small feed-forward/P controller returning throttle and brake."""
-    if target <= 0:
+    if target <= 0 and speed < 0.3:
         return 0.0, 1.0
     error = target - speed
     if error < -0.2:
@@ -106,7 +113,29 @@ def scripted_speed_control(speed: float, target: float) -> tuple[float, float]:
 
 
 def scripted_target_speed(scenario: str, target: float, travelled: float) -> float:
-    return 0.0 if scenario == "lead_brake" and travelled >= 40.0 else target
+    return 0.0 if scenario == "lead_brake" and travelled >= LEAD_DRIVE_M else target
+
+
+def scripted_deceleration_target(previous: float, dt: float) -> float:
+    """Ramp the lead's speed target down at a comfortable 3 m/s²."""
+    return max(0.0, previous - LEAD_DECEL_MPS2 * dt)
+
+
+def lead_brake_blocker_distance(lead_start: float, usable_length: float) -> float:
+    """Arc length beside the planned stop, bounded by the usable road."""
+    return min(lead_start + LEAD_DRIVE_M + LEAD_BRAKING_M, usable_length)
+
+
+def scenario_road_length(params: RunParams) -> float:
+    """Road required for actor placement and the manoeuvre."""
+    length = params.obstacle_m + ROAD_AFTER_OBSTACLE_M
+    if params.scenario in CURVE_SCENARIOS:
+        length = max(EMPTY_LANE_M, CURVE_WINDOW_M)
+    if params.scenario in MOVING_SCENARIOS:
+        length = max(140.0 if params.scenario != "oncoming_overtake" else params.obstacle_m + 60.0, length)
+    if params.scenario == "lead_brake":
+        length = max(length, params.obstacle_m + LEAD_DRIVE_M + LEAD_BRAKING_M + 20.0)
+    return length
 
 
 def lidar_mount(params: "RunParams", cfg: AvoidanceConfig) -> LidarMount:
@@ -128,6 +157,8 @@ def scenario_config(base: AvoidanceConfig, params: RunParams, lane_width: float)
         # Hold outside the emergency zone so a waiting ego can resume its overtake.
         cfg = replace(cfg, adjacent_detection_range=180.0,
                       safety_margin=max(cfg.safety_margin, cfg.standstill_gap))
+    if params.scenario == "oncoming_overtake":
+        cfg = replace(cfg, safety_margin=max(cfg.safety_margin, 10.0))
     return cfg
 
 
@@ -140,6 +171,7 @@ class ScriptedDriver:
         self.steer = waypoint_lane_steer(world)
         self.gap = ground_truth_obstacle_distance(world)
         self.travelled = 0.0
+        self._speed_target = target_speed
         self._last_location: Optional[carla.Location] = None
 
     def step(self) -> None:
@@ -148,6 +180,9 @@ class ScriptedDriver:
             self.travelled += loc.distance(self._last_location)
         self._last_location = loc
         target = scripted_target_speed(self.scenario, self.target_speed, self.travelled)
+        if self.scenario == "lead_brake" and target == 0.0:
+            target = scripted_deceleration_target(self._speed_target, FIXED_DT)
+        self._speed_target = target
         throttle, brake = scripted_speed_control(speed_of(self.actor), target)
         self.actor.apply_control(carla.VehicleControl(
             throttle=throttle, brake=brake, steer=self.steer(self.actor)))
@@ -259,7 +294,8 @@ def _scenario_vehicles(start: carla.Waypoint, params: RunParams,
     moving_lead = params.scenario in ("lead_vehicle", "lead_brake")
     vehicles = [("vehicle.audi.a2", obstacle, moving_lead)]
     if params.scenario in ("obstacle_stop", "curve_stop", "lead_brake"):
-        anchor = start.next(params.obstacle_m + 20.0)[0] if moving_lead else obstacle
+        anchor = (start.next(lead_brake_blocker_distance(
+            params.obstacle_m, scenario_road_length(params)))[0] if moving_lead else obstacle)
         vehicles.append(("vehicle.nissan.patrol", _adjacent(anchor, cfg.avoid_side), False))
     if params.scenario == "oncoming_overtake":
         anchor = start.next(distance + rng.uniform(40.0, 60.0))[0]
@@ -293,12 +329,8 @@ def _spawn_scenario_actors(world: carla.World, start: carla.Waypoint, params: Ru
 def setup_scenario(world: carla.World, params: RunParams, cfg: AvoidanceConfig, rng: random.Random):
     """Spawn ego (+ obstacle, + blocker). Returns (actors, start_waypoint)."""
     cmap = world.get_map()
-    length = params.obstacle_m + ROAD_AFTER_OBSTACLE_M
+    length = scenario_road_length(params)
     is_curve = params.scenario in CURVE_SCENARIOS
-    if is_curve:
-        length = max(EMPTY_LANE_M, CURVE_WINDOW_M)
-    if params.scenario in MOVING_SCENARIOS:
-        length = max(140.0 if params.scenario != "oncoming_overtake" else params.obstacle_m + 60.0, length)
     predicate = curve_is_usable if is_curve else road_is_usable
     for start in candidate_starts(cmap, length, cfg.avoid_side, rng, predicate)[:40]:
         if params.scenario == "oncoming_overtake" and _adjacent(start, cfg.avoid_side).lane_id * start.lane_id >= 0:
@@ -310,7 +342,7 @@ def setup_scenario(world: carla.World, params: RunParams, cfg: AvoidanceConfig, 
         raise NoUsableCurve(f"{params.town}: no usable curve for {params.scenario}")
     if params.scenario == "oncoming_overtake":
         raise NoOncomingRoad(f"{params.town}: no usable oncoming lane for {params.scenario}")
-    raise RuntimeError(f"{params.town}: no usable road for {params.scenario}")
+    raise NoUsableRoad(f"{params.town}: no usable road for {params.scenario}")
 
 
 def is_finished(scenario: str, row: dict, stopped_for: float, passed_m: float) -> bool:
@@ -471,7 +503,8 @@ def _teardown_tick(world: carla.World) -> None:
 
 
 def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceConfig,
-                  params: RunParams, rng: random.Random, out: Path) -> bool:
+                  params: RunParams, rng: random.Random, out: Path,
+                  start: carla.Waypoint) -> bool:
     ego = actors[0]
     collided = {"hit": False}
     sensor = world.spawn_actor(
@@ -493,7 +526,7 @@ def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceC
     world.tick()
     gt_fn = ground_truth_obstacle_distance(world)
     bridge = CarlaAvoidanceBridge(
-        world, ego, cfg, lane_steer_fn=camera,
+        world, ego, cfg, lane_steer_fn=camera, home_waypoint=start,
         obstacle_distance_fn=detector if params.obstacle_source == "lidar" else gt_fn,
         adjacent_clear_fn=detector.adjacent_lane_clear if params.adjacent_source == "lidar" else None,
         tracking_distance_fn=(ground_truth_obstacle_distance(world, interpolate=True)
@@ -520,7 +553,7 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
     try:
         try:
             actors, start = setup_scenario(world, params, base_cfg, rng)
-        except (NoUsableCurve, NoOncomingRoad) as exc:
+        except (NoUsableCurve, NoOncomingRoad, NoUsableRoad) as exc:
             log.warning("%s; skipping run %d", exc, params.run)
             return None
         if params.scenario == "curve_stop":
@@ -529,7 +562,7 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
         lane_gap = start.transform.location.distance(adj.transform.location)
         cfg = scenario_config(base_cfg, params, lane_gap)
         out = out_dir / f"{params.scenario}_run{params.run}.csv"
-        collision = _drive_actors(world, actors, cfg, params, rng, out)
+        collision = _drive_actors(world, actors, cfg, params, rng, out, start)
         oncoming = adj.lane_id * start.lane_id < 0
         log.info("%s %s run %d: obstacle %.0f m, %.1f m/s, lane %.2f m%s -> collision=%s",
                  params.town, params.scenario, params.run, params.obstacle_m, params.target_speed,

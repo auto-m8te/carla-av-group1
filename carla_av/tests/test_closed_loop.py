@@ -90,7 +90,7 @@ def simulate_lead(brakes: bool = False) -> tuple[float, float, list[Mode]]:
         lead_speed = 0.0 if brakes and lead >= 75.0 else 4.0
         gap = lead - x
         cmd = ctrl.step(Perception(0.0, gap, speed, not brakes,
-                                  obstacle_speed=lead_speed))
+                                  obstacle_speed=lead_speed, distance_travelled=x, dt=DT))
         modes.append(cmd.mode)
         # Feed-forward balances rolling/air resistance at the lead speed.
         drag = cfg.throttle_feedforward * MAX_ACCEL if speed > 0 else 0.0
@@ -107,7 +107,10 @@ def simulate_lead(brakes: bool = False) -> tuple[float, float, list[Mode]]:
 def test_constant_lead_keeps_time_gap_without_overtaking():
     gap, speed, modes = simulate_lead()
     assert gap >= 2 and abs(speed - 4.0) < 0.1
-    assert set(modes) == {Mode.FOLLOW}
+    assert set(modes) == {Mode.CRUISE, Mode.FOLLOW}
+    first_follow = modes.index(Mode.FOLLOW)
+    assert all(mode == Mode.CRUISE for mode in modes[:first_follow])
+    assert all(mode == Mode.FOLLOW for mode in modes[first_follow:])
 
 
 def test_braking_lead_stops_safely():
