@@ -158,3 +158,29 @@ def test_cli_accepts_moving_scenarios(monkeypatch, scenario):
 
     monkeypatch.setattr("sys.argv", ["run_scenarios", "--scenario", scenario])
     assert _parse_args().scenario == scenario
+
+def test_camera_lane_flags_and_columns(monkeypatch):
+    from scenarios.run_scenarios import _parse_args, CSV_FIELDS
+    monkeypatch.setattr('sys.argv', ['runner', '--lane', 'camera', '--lane-debug', 'overlays'])
+    args = _parse_args()
+    assert args.lane == 'camera'
+    assert args.lane_debug == 'overlays'
+    assert CSV_FIELDS[-3:] == ('lane_conf', 'lane_offset_cam', 'gt_lane_steer')
+
+def test_camera_log_values():
+    from scenarios.run_scenarios import lane_log_values
+    from perception.lane_detection import LaneEstimate
+    camera = SimpleNamespace(last_estimate=LaneEstimate(None, None, 0, None, None))
+    assert lane_log_values(camera, 0.2) == dict(lane_conf=0, lane_offset_cam='', gt_lane_steer=0.2)
+    assert lane_log_values(None, -0.1) == dict(lane_conf='', lane_offset_cam='', gt_lane_steer=-0.1)
+
+
+def test_lidar_noise_reaches_the_sensor_mount():
+    from avoidance.collision_avoidance import AvoidanceConfig
+    from scenarios.run_scenarios import RunParams, lidar_mount
+
+    static = RunParams("Town04", "obstacle_stop", 1, 40.0, 8.0, lidar_noise=0.05)
+    moving = RunParams("Town01", "oncoming_overtake", 1, 40.0, 8.0, lidar_noise=0.05)
+    assert lidar_mount(static, AvoidanceConfig()).noise_stddev == 0.05
+    assert lidar_mount(moving, AvoidanceConfig()).noise_stddev == 0.05
+    assert lidar_mount(RunParams("Town04", "empty_lane", 1, 40.0, 8.0), AvoidanceConfig()).noise_stddev == 0.0

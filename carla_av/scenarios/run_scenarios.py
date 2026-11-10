@@ -34,6 +34,7 @@ from avoidance.carla_adapter import (
     CarlaAvoidanceBridge, ObstacleFn, ground_truth_obstacle_distance, speed_of, waypoint_lane_steer,
 )
 from avoidance.collision_avoidance import AvoidanceConfig, CollisionAvoidance, Mode
+from perception.camera_sensor import CameraLaneModule
 from perception.lidar_sensor import LidarMount, LidarObstacleDetector
 
 log = logging.getLogger("scenarios")
@@ -63,6 +64,7 @@ CSV_FIELDS = (
     "gt_adjacent_lane_clear",
     "det_tag", "adj_tag",
     "obstacle_speed", "other_speed", "other_gap",
+    "lane_conf", "lane_offset_cam", "gt_lane_steer",
 )
 PERCEPTION_SOURCES = ("groundtruth", "lidar")
 
@@ -87,7 +89,10 @@ class RunParams:
     hud: bool = False        # draw controller mode / speed / gap above the car
     obstacle_source: str = "groundtruth"  # "lidar" = Abir's LiDAR module (E3)
     adjacent_source: str = "groundtruth"  # "lidar" = adjacent-lane check from LiDAR too
+    lane_source: str = "groundtruth"
+    lane_debug: Optional[str] = None
     lidar_debug: bool = False
+    lidar_noise: float = 0.0   # LiDAR range noise std-dev in metres (robustness test)
 
 
 def scripted_speed_control(speed: float, target: float) -> tuple[float, float]:
@@ -113,8 +118,8 @@ def lidar_mount(params: "RunParams", cfg: AvoidanceConfig) -> LidarMount:
     """
     if params.scenario in MOVING_SCENARIOS:
         return LidarMount(semantic=params.lidar_debug, range=max(70.0, cfg.adjacent_detection_range + 5.0),
-                          channels=64, points_per_second=1_300_000)
-    return LidarMount(semantic=params.lidar_debug)
+                          channels=64, points_per_second=1_300_000, noise_stddev=params.lidar_noise)
+    return LidarMount(semantic=params.lidar_debug, noise_stddev=params.lidar_noise)
 
 
 def scenario_config(base: AvoidanceConfig, params: RunParams, lane_width: float) -> AvoidanceConfig:
@@ -360,9 +365,18 @@ def draw_detection(world: carla.World, detector: Optional[LidarObstacleDetector]
         world.debug.draw_point(point, size=0.15, color=carla.Color(255, 0, 0), life_time=FIXED_DT * 1.5)
 
 
+def lane_log_values(camera: Optional[CameraLaneModule], gt_steer: float) -> dict:
+    estimate = camera.last_estimate if camera is not None else None
+    return {"lane_conf": estimate.confidence if estimate is not None else "",
+            "lane_offset_cam": _blank(estimate.lateral_offset_m) if estimate is not None else "",
+            "gt_lane_steer": gt_steer}
+
+
 def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                   gt_fn: ObstacleFn, detector: Optional[LidarObstacleDetector] = None,
-                  other: Optional[ScriptedDriver] = None) -> None:
+                  other: Optional[ScriptedDriver] = None,
+                  camera: Optional[CameraLaneModule] = None) -> None:
+    gt_lane_fn = waypoint_lane_steer(world)
     partial = out.with_suffix(".partial")  # renamed only when the run ends normally
     with partial.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
@@ -395,6 +409,7 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
             row["obstacle_speed"] = _blank(p.obstacle_speed)
             row.update(other.log_values(ego) if other is not None else
                        {"other_speed": "", "other_gap": ""})
+            row.update(lane_log_values(camera, gt_lane_fn(ego)))
             writer.writerow(row)
             stopped_for = stopped_for + FIXED_DT if cmd.mode == Mode.STOPPED else 0.0
             if is_finished(params.scenario, row, stopped_for, p.distance_travelled - params.obstacle_m):
@@ -469,10 +484,16 @@ def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceC
         detector = LidarObstacleDetector(world, ego, mount=lidar_mount(params, cfg),
                                          avoidance_config=cfg)
         actors.append(detector.sensor)
+    camera = None
+    if params.lane_source == "camera":
+        debug_dir = (Path(params.lane_debug) / params.town / f"{params.scenario}_run{params.run}"
+                     if params.lane_debug else None)
+        camera = CameraLaneModule(world, ego, debug_dir=debug_dir)
+        actors.append(camera.sensor)
     world.tick()
     gt_fn = ground_truth_obstacle_distance(world)
     bridge = CarlaAvoidanceBridge(
-        world, ego, cfg,
+        world, ego, cfg, lane_steer_fn=camera,
         obstacle_distance_fn=detector if params.obstacle_source == "lidar" else gt_fn,
         adjacent_clear_fn=detector.adjacent_lane_clear if params.adjacent_source == "lidar" else None,
         tracking_distance_fn=(ground_truth_obstacle_distance(world, interpolate=True)
@@ -484,7 +505,7 @@ def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceC
         actor = actors[2] if oncoming else actors[1]
         target = rng.uniform(6.0, 8.0) if oncoming else params.target_speed * rng.uniform(0.4, 0.6)
         other = ScriptedDriver(world, actor, params.scenario, target)
-    drive_and_log(world, ego, bridge, CollisionAvoidance(cfg), params, out, collided, gt_fn, detector, other)
+    drive_and_log(world, ego, bridge, CollisionAvoidance(cfg), params, out, collided, gt_fn, detector, other, camera)
     return collided["hit"]
 
 
@@ -537,8 +558,12 @@ def _parse_args() -> argparse.Namespace:
                     help="obstacle_distance source: CARLA ground truth or Abir's LiDAR module")
     ap.add_argument("--adjacent", choices=PERCEPTION_SOURCES, default="groundtruth",
                     help="adjacent-lane-free check: CARLA ground truth or LiDAR")
+    ap.add_argument("--lidar-noise", type=float, default=0.0,
+                    help="LiDAR range noise std-dev in metres (semantic LiDAR ignores it)")
     ap.add_argument("--lidar-debug", action="store_true",
                     help="use semantic LiDAR and log the object tag behind detections")
+    ap.add_argument("--lane", choices=("groundtruth", "camera"), default="groundtruth")
+    ap.add_argument("--lane-debug", metavar="DIR", help="save camera lane overlays")
     return ap.parse_args()
 
 
@@ -566,7 +591,8 @@ def main() -> None:
                     obstacle_m=round(rng.uniform(*( (30.0, 40.0) if scenario in
                         ("lead_vehicle", "lead_brake") else OBSTACLE_RANGE_M)), 1),
                     target_speed=round(rng.uniform(*TARGET_SPEED_RANGE), 2),
-                    lidar_debug=args.lidar_debug, realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle, adjacent_source=args.adjacent,
+                    lane_source=args.lane, lane_debug=args.lane_debug,
+                    lidar_debug=args.lidar_debug, lidar_noise=args.lidar_noise, realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle, adjacent_source=args.adjacent,
                 )
                 if args.resume and (out_dir / f"{scenario}_run{i}.csv").exists():
                     continue

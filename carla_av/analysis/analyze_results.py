@@ -49,6 +49,8 @@ class RunMetrics:
     perception_missed: int = 0                 # ticks where ground truth sees an obstacle, detector not
     perception_false: int = 0                  # ticks where detector sees one, ground truth not
     adjacent_disagree: int = 0                 # ticks where adjacent-lane-free differs from truth
+    lane_conf_mean: Optional[float] = None
+    lane_lost_ticks: int = 0
     waited_for_oncoming: bool = False
 
 
@@ -66,7 +68,7 @@ def load_rows(path: Path) -> list[dict]:
         r["gt_obstacle_distance"] = float(gt) if gt else None
         gt_adj = r.get("gt_adjacent_lane_clear")
         r["gt_adjacent_lane_clear"] = r.get("adjacent_lane_clear") if not gt_adj else gt_adj
-        for key in ("obstacle_speed", "other_speed", "other_gap"):
+        for key in ("obstacle_speed", "other_speed", "other_gap", "lane_conf"):
             value = r.get(key)
             r[key] = float(value) if value not in (None, "") else None
     return rows
@@ -131,6 +133,7 @@ def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> Run
     mae, missed, false = perception_error(rows)
     adj_disagree = sum(1 for r in rows if r.get("adjacent_lane_clear") != r["gt_adjacent_lane_clear"])
 
+    confidences = [float(r["lane_conf"]) for r in rows if r.get("lane_conf") not in (None, "")]
     success = _successful(scenario, rows, min_gap, lane_max, collision)
 
     return RunMetrics(
@@ -146,6 +149,8 @@ def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> Run
         reaction_time_s=reaction_t,
         min_gap_m=min_gap,
         final_offset_m=last["lateral_offset"],
+        lane_conf_mean=mean(confidences) if confidences else None,
+        lane_lost_ticks=sum(c == 0 for c in confidences),
         perception_mae_m=mae,
         perception_missed=missed,
         perception_false=false,
@@ -202,20 +207,21 @@ def town_table(metrics: list[RunMetrics]) -> str:
 
 def perception_table(metrics: list[RunMetrics]) -> str:
     """Obstacle-detector accuracy vs ground truth, per scenario."""
-    lines = ["| Scenario | Distance MAE (m) | Missed ticks | False-alarm ticks | Adjacent-lane disagree ticks |",
-             "|---|---|---|---|---|"]
+    lines = ["| Scenario | Distance MAE (m) | Missed ticks | False-alarm ticks | Adjacent-lane disagree ticks | Lane conf (mean) | Lane lost ticks |",
+             "|---|---|---|---|---|---|---|"]
     for sc in SCENARIO_ORDER:
         ms = [m for m in metrics if m.scenario == sc]
         if ms:
             lines.append(f"| {sc} | {_fmt([m.perception_mae_m for m in ms])} "
                          f"| {sum(m.perception_missed for m in ms)} | {sum(m.perception_false for m in ms)} "
-                         f"| {sum(m.adjacent_disagree for m in ms)} |")
+                         f"| {sum(m.adjacent_disagree for m in ms)} | {_fmt([m.lane_conf_mean for m in ms])} "
+                         f"| {sum(m.lane_lost_ticks for m in ms)} |")
     return "\n".join(lines) + "\n"
 
 
 def full_report(metrics: list[RunMetrics]) -> str:
     report = "### Overall\n\n" + summary_table(metrics) + "\n### Per town\n\n" + town_table(metrics)
-    if any(m.perception_mae_m or m.perception_missed or m.perception_false or m.adjacent_disagree
+    if any(m.lane_conf_mean is not None or m.perception_mae_m or m.perception_missed or m.perception_false or m.adjacent_disagree
            for m in metrics):
         report += "\n### Obstacle detection vs ground truth\n\n" + perception_table(metrics)
     return report

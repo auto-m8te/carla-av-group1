@@ -29,7 +29,7 @@ The LiDAR module is already wired in:
 
 Each run also logs the ground-truth values (`gt_obstacle_distance`, `gt_adjacent_lane_clear`),
 and the analysis reports distance error, missed ticks, false alarms and adjacent-lane
-disagreements. Lane steering is still the ground-truth fallback until Adil's module lands.
+disagreements. Camera lane steering is available with `--lane camera`; ground truth remains the default.
 
 ## Obstacle detection (LiDAR)
 ```
@@ -154,3 +154,32 @@ starting or connecting to CARLA; driving behaviour still needs simulator runs.
 
 - Adjacent clearance from either source requires `adjacent_clear_hold=0.5` s continuously free; blocked answers are immediate, CSV clearance is debounced and ground truth stays raw.
 - AVOID caps the speed target while mostly in the home lane at `max(avoid_min_speed=2.0, (gap - safety_margin) / lane_change_time)` and brakes at 0.3 above the target by more than 1 m/s.
+
+## Lane detection (camera)
+
+`--lane camera` enables the E2 MVP: RGB camera (800?450, FOV 90?, mounted
+1.5 m forward and 1.6 m high, pitched down 8?) ? HSV white/yellow mask ?
+Canny edges ? trapezoidal ROI ? probabilistic Hough segments ? length-weighted
+linear boundary fits ? lateral offset and image-plane heading error ? smoothed
+PD steering, clamped to [-1, 1]. Positive offset means the car is right of the
+lane centre; negative steering brings it left. Avoidance consumes this steering
+through the existing lane plug-in.
+
+Two boundaries give confidence 1.0 and calibrate pixel width against a 3.5 m
+lane prior. One boundary gives confidence 0.5 and uses the last measured pixel
+width (ROI bottom width before calibration); its missing boundary is assumed
+parallel in image space. No boundaries give confidence 0 and decay the last
+command by 0.9 per fresh frame. Missing camera frames hold the last command.
+This straight-line, image-plane MVP needs simulator evaluation on curves,
+shadows and junctions; it is not a calibrated ground-plane heading estimator.
+
+```bash
+python -m scenarios.run_scenarios --lane camera --lane-debug lane_overlays --out results_camera
+```
+
+`--lane {groundtruth,camera}` defaults to `groundtruth`. Optional `--lane-debug DIR`
+saves an overlay every 20 calls in town/run subdirectories. CSVs append
+`lane_conf`, `lane_offset_cam` (blank when unavailable), and `gt_lane_steer`
+(the waypoint steering each tick). Ground-truth runs leave camera fields blank.
+Analysis includes mean camera confidence and lost-lane ticks in `per_run.csv`
+and the perception table when camera confidence is available.

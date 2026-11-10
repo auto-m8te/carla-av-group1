@@ -169,3 +169,19 @@ def test_abort_counts_as_reaction_and_has_plot_color():
             dict(t=0.5, mode="ABORT", obstacle_distance=20.0)]
     assert _reaction(rows) == (20.0, 0.5)
     assert MODE_COLORS["ABORT"] == "#f6b26b"
+
+def test_camera_lane_metrics(tmp_path):
+    path = tmp_path / 'empty_lane_run1.csv'
+    write_toy_run(path, None, False, steps=3)
+    rows = list(csv.DictReader(path.open()))
+    with path.open('w', newline='') as fh:
+        writer = csv.DictWriter(fh, fieldnames=(*FIELDS, 'lane_conf'))
+        writer.writeheader()
+        for row, confidence in zip(rows, [1, 0.5, 0]):
+            writer.writerow(dict(row, lane_conf=confidence))
+    (metric,) = analyze(tmp_path, make_plots=False)
+    assert metric.lane_conf_mean == 0.5
+    assert metric.lane_lost_ticks == 1
+    report = (tmp_path / 'summary.md').read_text()
+    assert 'Lane conf (mean)' in report
+    assert 'Lane lost ticks' in report
