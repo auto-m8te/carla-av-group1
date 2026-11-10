@@ -74,12 +74,18 @@ Every tick was logged to CSV (speed, controller mode, obstacle distance, lateral
 from the original lane centre, and control commands). A collision sensor on the ego
 vehicle recorded any contact.
 
-**Perception sources.** These results use CARLA ground-truth fallbacks instead of the
-team's perception modules. Lane steering is pure pursuit on map waypoints, and obstacle
-distance is computed geometrically along the lane from actor positions. They therefore
-isolate the decision and control logic (the collision-avoidance module) from perception
-errors. [[Rerun with Adil's OpenCV lane module and Abir's LiDAR module once integrated, and
-compare.]]
+**Perception sources.** The experiment was run twice with the same 90 seeds:
+
+- **Run A (ground truth):** obstacle distance and "is the adjacent lane free" are computed
+  geometrically from actor positions. This isolates the decision and control logic.
+- **Run B (LiDAR):** both values come from the team's LiDAR obstacle module (a 32-channel
+  roof LiDAR, one full sweep per tick; see Section III). Ground truth is still logged next to
+  the LiDAR output each tick, so detection errors can be measured.
+
+In both runs lane steering is pure pursuit on map waypoints. [[Rerun with Adil's OpenCV
+lane module once integrated.]] In Run B, Town02 and Town03 were loaded as their layered
+`_Opt` variants (same OpenDRIVE road network, same seeds), because the standard versions
+crashed CARLA's renderer on our machine ("Shader compilation failures are Fatal").
 
 ### B. Metrics
 
@@ -114,6 +120,21 @@ compare.]]
 | Town04 | 5/5 | 5/5 | 5/5 | 0 |
 | Town05 | 5/5 | 5/5 | 5/5 | 0 |
 | Town10HD | 5/5 | 5/5 | 5/5 | 0 |
+
+**Table III – Run B: LiDAR perception (same 90 seeds)**
+
+| Scenario | Runs | Success rate | Collisions | Reaction dist (m) | Min gap (m) | LiDAR distance error (MAE, m) |
+|---|---|---|---|---|---|---|
+| S1 empty_lane | 30 | 30/30 (100%) | 0 | – | – | – |
+| S2 obstacle_stop | 30 | 30/30 (100%) | 0 | 11.05 (9.51–12.53) | 7.02 (5.41–10.32) | 0.48 (0.21–1.97) |
+| S3 obstacle_avoid | 30 | 30/30 (100%) | 0 | 26.85 (23.95–33.18) | 13.78 (10.19–19.19) | 0.44 (0.27–1.76) |
+
+All six towns: 15/15 runs each, 0 collisions. Of 23,715 logged ticks, the LiDAR
+reported an obstacle that ground truth did not in 136 ticks (0.6%). 130 of these came from
+three Town05 runs, where a steep road crest 33–53 m ahead was briefly read as an obstacle
+while the car pulled away (semantic-LiDAR tag: road). None of them changed the vehicle's
+behaviour. "Missed" ticks (373) are almost all the first tick of a run, before the first
+sweep arrives, and the moment the obstacle slides out of the corridor during a lane change.
 
 **Additional observations from the logs**
 
@@ -171,12 +192,16 @@ regression-tested (28 automated tests):
 | 7 | Town01: emergency stop mid-lane-change, then steered back toward the obstacle | Fixed trigger distance too short; emergency stop reset the avoid state | Speed-scaled trigger; keep the manoeuvre state through braking |
 | 8 | Collision in S2 on Town03 (1 of 18 runs) | Adjacent-lane check only covered 30 m, so the blocker was out of range | Check the full 60 m detection range; brake if the target lane becomes blocked after committing |
 | 9 | 4/30 S2 runs briefly started a lane change before aborting (safe, but up to 1.8 m into the lane) | On curves the blocker was measured against the lane direction at the ego's position | Measure each actor against the lane at its own position; false starts went from 4/30 to 0/30 |
+| 10 | LiDAR: 101 false-alarm ticks in one Town04 avoid run; gap *grew* while driving | The search corridor bent with the yaw rate and swept onto the guardrail | Corridor follows the lane shape from the map |
+| 11 | LiDAR: car changed lanes on an empty Town04 road | Elevated highway: terrain below the road pulled the road-height estimate down, so the road looked like an obstacle | Estimate road height only from points near the path |
+| 12 | LiDAR: 1,564 false-alarm ticks in the first 90-run LiDAR evaluation, mostly Town01/02/10HD | Where the road turns, the corridor continued straight ahead into trees and buildings (found with semantic-LiDAR tags) | Only search as far as the lane path reaches; false alarms fell to 136 |
 
 **Limitations.**
 
-1. **Ground-truth perception.** The results measure the decision and control logic only.
-   Real camera/LiDAR perception adds noise, latency and false positives, so success rates
-   are expected to drop when the team's modules are integrated.
+1. **Perception is partly idealised.** Run B uses real LiDAR for obstacles, but the LiDAR
+   is noise-free (CARLA ray casting), the lane corridor comes from the map, and lane
+   steering is still ground truth. Sensor noise and the camera lane module are untested.
+   Steep road crests can still be read as obstacles (Town05).
 2. **Static obstacles only.** Parked cars were used. Moving obstacles, pedestrians, and
    oncoming traffic during an overtake were not tested. Overtaking through the oncoming
    lane currently assumes the 60 m range is enough, while real oncoming traffic needs a
@@ -202,7 +227,9 @@ design, with separate lane-following, obstacle-detection, and collision-avoidanc
 connected through small interfaces, let the team develop and test each part on its own
 before integrating them. Across 90 randomised test runs in six CARLA towns, the vehicle succeeded in 100% of
 the empty-lane, obstacle-stop and obstacle-avoid scenarios with zero collisions, using
-ground-truth perception. Validating the system with the team's camera and LiDAR modules is the next step.
+ground-truth perception, and again in 90/90 runs with zero collisions when obstacles and the
+adjacent lane were detected by the team's LiDAR module. Integrating the camera lane module is
+the next step.
 
 Future work:
 1. **Dynamic obstacles**: estimate obstacle velocity and use time-to-collision instead of
