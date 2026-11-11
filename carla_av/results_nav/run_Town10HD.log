@@ -1,0 +1,12 @@
+INFO Town10HD route run 1: obstacle 42 m, 9.3 m/s, lane 3.50 m -> collision=False
+INFO Town10HD route run 2: obstacle 52 m, 9.2 m/s, lane 3.50 m -> collision=False
+INFO Town10HD route run 3: obstacle 39 m, 7.9 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town10HD route run 4: obstacle 48 m, 7.8 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town10HD route run 5: obstacle 49 m, 9.2 m/s, lane 3.50 m -> collision=False
+INFO Town10HD route_obstacle run 1: obstacle 53 m, 8.7 m/s, lane 3.50 m -> collision=False
+INFO Town10HD route_obstacle run 2: obstacle 54 m, 8.9 m/s, lane 3.50 m -> collision=False
+INFO Town10HD route_obstacle run 3: obstacle 43 m, 9.7 m/s, lane 3.50 m -> collision=False
+INFO Town10HD route_obstacle run 4: obstacle 40 m, 6.8 m/s, lane 3.50 m -> collision=False
+INFO Town10HD route_obstacle run 5: obstacle 52 m, 9.4 m/s, lane 3.50 m -> collision=False
+INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD_Opt.bin 
+INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD.bin 

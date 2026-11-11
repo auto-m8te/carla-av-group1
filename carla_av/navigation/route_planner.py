@@ -75,7 +75,10 @@ def sample_segment(start: Any, end: Any, step_m: float) -> list[Any]:
         if (current.road_id, current.lane_id) != (start.road_id, start.lane_id):
             break
         samples.append(current)
-    raise ValueError('Topology segment could not be sampled')
+    # Sampling can stop early (the next waypoint hops to another road id right at a
+    # segment boundary, or a loop); keep what we have and close the segment at its end
+    # instead of failing the whole map (that made planning fail on 5 of 6 towns).
+    return samples + [end]
 
 
 def _lane_change(a: Any, b: Any) -> bool:

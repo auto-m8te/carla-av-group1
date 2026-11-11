@@ -196,3 +196,20 @@ def test_route_obstacle_uses_any_junction_with_room_after_it():
     idx = route_obstacle_index(route, random.Random(1))
     assert idx is not None and 36 + 25 <= route.arc[idx] <= 36 + 60
     assert route_obstacle_index(SimpleNamespace(route=pts[:20], arc=route.arc[:20]), random.Random(1)) is None
+
+
+def test_segment_sampling_never_fails_the_whole_map():
+    """A segment whose next waypoint hops to another road id is closed at its end."""
+    from types import SimpleNamespace
+
+    from navigation.route_planner import sample_segment
+
+    def wp(x, road):
+        w = SimpleNamespace(transform=SimpleNamespace(location=SimpleNamespace(x=x, y=0.0, z=0.0)),
+                            road_id=road, lane_id=1, s=float(x))
+        w.next = lambda d, x=x: [wp(x + d, road if x + d < 6 else road + 1)]
+        return w
+
+    start, end = wp(0.0, 1), wp(20.0, 1)
+    samples = sample_segment(start, end, 2.0)
+    assert samples[0] is start and samples[-1] is end and len(samples) >= 3
