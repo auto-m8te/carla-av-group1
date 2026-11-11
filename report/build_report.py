@@ -142,6 +142,10 @@ def update_method_text(doc: Doc) -> None:
     p = find(doc, 'F. Vehicle Control.')
     assert p.text.endswith('before submission.')
     replace(p, p.text.split('Although the project task description')[0] + F_TEXT)
+    p = find(doc, 'G. Test Methodology.')
+    replace(p, p.text.replace('G. Test Methodology.', 'H. Test Methodology.'))
+    nav = insert_after(find(doc, 'F. Vehicle Control.'), find(doc, 'F. Vehicle Control.'), NAV_TEXT)
+    replace(nav, NAV_TEXT, 'G. Navigation.')
     p = find(doc, 'At every simulation tick')
     replace(p, p.text.split('These results assess')[0] + G_TEXT)
 
@@ -241,10 +245,11 @@ def validate(doc: Doc) -> None:
     headings = [p.text for p in doc.paragraphs if p.style and p.style.name == 'Heading 1']
     expected = ['I.', 'II.', 'III.', 'IV.', 'V.', 'VI.', 'REFERENCES']
     assert len(headings) == 7 and all(h.startswith(e) for h, e in zip(headings, expected)), headings
-    text = '\n'.join(p.text for p in doc.paragraphs)
-    assert '[Adil:' not in text and '[Abir:' not in text
+    text = '\n'.join(p.text for p in doc.paragraphs) + '\n' + '\n'.join(c.text for t in doc.tables for row in t.rows for c in row.cells)
+    assert not re.search(r'\[(?:Adil|Abir|Khalid):|\[\[|paste .*here|placeholder', text, re.I)
     iv = text.split('IV. INNOVATION', 1)[1].split('V. FINDINGS', 1)[0]
-    assert '[Khalid:' in iv
+    assert all(any(r.bold and r.text.startswith(letter + '.') for p in doc.paragraphs for r in p.runs) for letter in 'ABCDEF')
+    assert 'Six points stand out.' in iv
     refs = [int(m[1]) for p in doc.paragraphs if (m := re.match(r'^\[(\d+)\]', p.text))]
     assert refs == list(range(1, len(refs)+1)), refs
     assert all(n in refs for p in body_paragraphs(doc) for m in CITATION.finditer(p.text) for n in expand(m[0]))
@@ -255,14 +260,33 @@ def validate(doc: Doc) -> None:
     assert not any(t.cell(0, 0).text.startswith('CARLA 0.9.16 SIMULATION') for t in doc.tables)
     assert 'Fig. X' not in text and '{HIM}' not in text
     assert '194/200' in text and '17/18' in text
-    assert any(len(t.rows) == 22 and t.cell(21, 0).text == '21' for t in doc.tables)
+    assert any(len(t.rows) == 26 and t.cell(25, 0).text == '25' for t in doc.tables)
 
 
 
 # Final implementation details are kept here so the incoming team documents stay immutable.
-C_TEXT = "C. Perception and Sensor Suite. Camera lane detection combines a local-contrast white mask, a yellow mask and curb edges with Canny [4] and Hough lines [5] in a wider region of interest. Boundary pairs are checked for vanishing point, centre and width consistency, then ranked using a lane-width prior. A median of accepted widths supports single-side fallback. A PD-style camera controller, using feedback control principles [9], uses offset and heading, a five-estimate median filter and a steering rate limit of 0.15 per update after warmup. Tuning used labelled CARLA frames with map-derived offset and heading: drives 0–1 were tuning data, while drive 2 was held out; controller state was reset per town/drive and frames were evaluated in tick order (Section V). LiDAR processing uses a map-shaped path corridor, range-bin road-height removal and a cluster check; adjacent-lane detection uses the neighbouring corridor. Core scenarios use a 32-channel, 70 m roof LiDAR. Moving-traffic scenarios use 64 channels and 185 m range, extending adjacent sensing to 180 m. Approximately 150 m of visible free lane is needed for an overtake against closing traffic; a 60–70 m view can become unsafe during the manoeuvre. Camera and LiDAR reads wait, with a bounded timeout, for the current simulation frame, avoiding braking based on stale sweeps."
+C_TEXT = "C. Perception and Sensor Suite. Camera lane detection combines a local-contrast white mask, a yellow mask and curb edges with Canny [4] and Hough lines [5] in a wider region of interest. Boundary pairs are checked for vanishing point, centre and width consistency, then ranked using a lane-width prior. A median of accepted widths supports single-side fallback. A PD-style camera controller, using feedback control principles [9], uses offset and heading, a five-estimate median filter and a steering rate limit of 0.15 per update after warmup. Tuning used labelled CARLA frames with map-derived offset and heading: drives 0–1 were tuning data, while drive 2 was held out; controller state was reset per town/drive and frames were evaluated in tick order (Section V). LiDAR processing uses a map-shaped path corridor, range-bin road-height removal and a cluster check requiring a vertical span ≥0.25 m; adjacent-lane detection uses the neighbouring corridor. Core scenarios use a 32-channel, 70 m roof LiDAR. Moving-traffic scenarios use 64 channels and 185 m range, extending adjacent sensing to 180 m. Approximately 150 m of visible free lane is needed for an overtake against closing traffic; a 60–70 m view can become unsafe during the manoeuvre. Camera and LiDAR reads wait, with a bounded timeout, for the current simulation frame, avoiding braking based on stale sweeps."
 D_TEXT += " Obstacle speed is estimated from ego speed plus tracked gap change. FOLLOW adaptive cruise uses a 6 m standstill gap plus a 1.8 s time gap, with TTC braking below 3 s. A possibly moving obstacle cannot be overtaken even before motion confirmation. An adjacent lane is free only when nearest gap − closing speed·9 s >10 m; nearby traffic and unknown object speed block pull-out. Clearance must remain free for 1 s. If the target lane closes during a committed manoeuvre, ABORT brakes and returns behind the obstacle where clearance allows. Stronger low-speed steering and creep recovery support pull-out after waiting."
 G_TEXT = "Run A preserves the original 90-run ground-truth evaluation. Final Run B uses LiDAR obstacle and adjacent-lane detection with map-waypoint pure-pursuit steering [11] over 200 runs. Run C uses camera steering plus LiDAR for 18 core-scenario runs. A separate Town04 test adds 0.05 m LiDAR range noise. New curve scenarios accumulate 45–120° heading change. Moving scenarios include a slower lead vehicle, a lead braking at 3 m/s², and an oncoming car at 6–8 m/s. Success requires collision-free lane following, stopping with at least 2 m gap, or completed pass-and-return as appropriate. Lead braking additionally requires final speed below 0.2 m/s; oncoming overtakes must never move more than half a lane over while the oncoming vehicle approaches. Full criteria and coverage are given in Section V."
+
+
+NAV_TEXT = 'G. Navigation. The planner builds a directed graph from the map topology and uses Dijkstra to find a route. Parallel-lane changes carry a 30 m penalty and are excluded inside junctions. A pure-pursuit route follower [11] uses speed-dependent look-ahead 2 m + 0.5 s·v, clamped to 3–6 m. Speed is limited to 5 m/s near and inside junctions and 4 m/s for sharp turns. The LiDAR corridor follows the route and is cut where the route turns away and forward distance stops increasing. Overtaking is disabled within 25 m of a junction and inside it.'
+
+
+def innovation(doc: Doc) -> None:
+    start, end = find(doc, 'IV.'), find(doc, 'V. FINDINGS')
+    template = find(doc, 'C. Perception')
+    cursor = start._p.getnext()
+    while cursor is not end._p:
+        following = cursor.getnext()
+        cursor.getparent().remove(cursor)
+        cursor = following
+    anchor = start
+    md = (ROOT / 'section_iv_innovation.md').read_text(encoding='utf-8')
+    for chunk in re.split(r'\n\s*\n', md.split('\n', 1)[1].strip()):
+        anchor = insert_after(anchor, template, clean_md(chunk))
+        lead = re.match(r'\*\*(.*?)\*\*', chunk)
+        replace(anchor, clean_md(chunk), lead[1] if lead else '')
 
 
 def final_sections(doc: Doc, md: str) -> None:
@@ -347,6 +371,10 @@ def main() -> None:
     methodology(doc)
     update_method_text(doc)
     literature(doc)
+    innovation(doc)
+    for p in list(doc.paragraphs):
+        if p.text.strip() == '[Khalid: keep this list consistent with Section IV.]':
+            remove(p)
     final_sections(doc, md)
     mapping = references(doc)
     validate(doc)

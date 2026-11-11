@@ -71,7 +71,7 @@ def intro(prs: Presentation) -> None:
     box(s, "Follow the lane.\nDetect the obstacle.\nChoose a safe response.", 0.7, 1.85, 11.6, 2.6, 32, True)
     box(s, "CARLA 0.9.16  ·  Group 1", 0.7, 4.85, 11, 0.5, 20)
     box(s, "Khalid · Abir · Adil · Prithiv · Omar\nSRH Berlin · WS2026/27 · Prof. A. Laboudi", 0.7, 5.65, 11.5, 0.9, 20)
-    s = new_slide(prs, "Problem & goals", "The task combines perception, decision making, and vehicle control in a simulated city. The first requirement is to follow a driving lane. The second is to detect obstacles, and the third is to avoid collisions by stopping or steering around them. The fourth is safe navigation, with junction navigation still part of the future work.")
+    s = new_slide(prs, "Problem & goals", "The task combines perception, decision making, and vehicle control in a simulated city. The first requirement is to follow a driving lane. The second is to detect obstacles, and the third is to avoid collisions by stopping or steering around them. The fourth is safe navigation, including implemented route navigation through junctions.")
     for y, heading, detail in [(1.65, "Follow a driving lane", "Keep the vehicle aligned with the road"), (2.85, "Detect obstacles", "Identify objects along the driving path"), (4.05, "Avoid collisions", "Stop or steer around when the adjacent lane is free"), (5.25, "Navigate safely", "Coordinate perception, decisions and control")]:
         box(s, heading, 0.8, y, 11.8, 0.45, 24, True)
         box(s, detail, 0.8, y+0.5, 11.8, 0.45)
@@ -88,9 +88,9 @@ def methods(prs: Presentation) -> None:
     s = new_slide(prs, "Architecture", "The architecture separates sensing, obstacle detection, decision making, and control, with ownership shown in the diagram. The obstacle interface supplies distance and adjacent-lane availability to the decision module. The diagram also shows the camera lane branch, which is evaluated separately in Run C. In the reported evaluations, lane steering and the LiDAR corridor use map information.")
     picture(s, "architecture_owners.png", 0.7, 1.35, 8.0, 5.45)
     box(s, "Perception → decision → control\n\nSmall module interfaces\n\nCamera steering: Run C\n\nFinal Run B: map steering", 9.0, 1.85, 3.6, 4.8, 20)
-    s = new_slide(prs, "Obstacle detection", "A roof-mounted, 32-channel LiDAR supplies one sweep per tick. A range gate first filters the points, then a lane-shaped corridor from the map selects the relevant path. Road removal uses grade-limited height estimates in 2 m bins. A cluster must contain at least 3 points within 1 m to count as an obstacle.")
+    s = new_slide(prs, "Obstacle detection", "A roof-mounted, 32-channel LiDAR supplies one sweep per tick. A range gate first filters the points, then a lane-shaped corridor from the map selects the relevant path. Road removal uses grade-limited height estimates in 2 m bins. A cluster must contain at least 3 points within 1 m and span at least 0.25 m vertically to count as an obstacle.")
     box(s, "32-channel core / 64-channel moving · frame-synchronised", 0.8, 1.65, 11.8, 0.6, 24, True)
-    stages = [("Range gate", "Filter the sweep"), ("Lane corridor", "Follow map geometry"), ("Road removal", "2 m bins\nGrade-limited"), ("Cluster check", "≥3 points\nWithin 1 m")]
+    stages = [("Range gate", "Filter the sweep"), ("Lane corridor", "Follow map geometry"), ("Road removal", "2 m bins\nGrade-limited"), ("Cluster check", "≥3 points\nWithin 1 m\nHeight span ≥0.25 m")]
     for i, (title, detail) in enumerate(stages):
         x = 0.75+i*3.15
         rule(s, x, 2.95, 2.45, ACCENT if i == 0 else INK)
@@ -136,6 +136,14 @@ def evidence(prs: Presentation) -> None:
         picture(s, name, x, 2.35, 4, 4.05)
 
 
+def navigation(prs: Presentation) -> None:
+    s = new_slide(prs, "City navigation", "Run D: six towns, five runs per scenario per town. Directed topology graph with Dijkstra and a 30 m parallel-lane-change penalty outside junctions. Pure pursuit uses 2 m + 0.5 s times speed, clamped 3–6 m. Junction and sharp-turn limits are 5 and 4 m/s. The route corridor is cut where it turns away; no overtaking within 25 m of junctions. route_obstacle passed 30/30; route passed 18/30 under the strict offset criterion below 1.5 m outside junctions. 29/30 routes reached the goal, inferred from duration below 90 s; only Town05_Opt run 4 timed out. Nine failures were 1.5–2.1 m corner cutting and two Town04 failures were about 5.2 m during planned lane changes. Zero collisions in 60 runs. Detector regression: Town01 and Town04, empty/stop/avoid, 30/30 and zero collisions.")
+    box(s, "• Directed map graph + Dijkstra\n  Parallel-lane changes: 30 m penalty\n• Pure pursuit: 2 m + 0.5 s·v\n  Look-ahead clamped to 3–6 m\n• Junction / turn limits: 5 / 4 m/s\n  Route corridor; no passing near junctions", 0.8, 1.55, 5.7, 3.0, 20)
+    box(s, "Run D · 6 towns · 60 runs\nObstacle stops: 30/30\nStrict routes: 18/30\nGoal arrivals: 29/30 · 0 collisions", 0.8, 4.9, 5.7, 1.75, 22, True, ACCENT)
+    picture(s, "Town01_route_run1.png", 6.65, 1.6, 5.9, 4.9)
+    box(s, "Run D · Town01 · route", 6.65, 6.45, 5.9, 0.4, 17)
+
+
 def closing(prs: Presentation) -> None:
     s = new_slide(prs, "What broke and how we fixed it", "The LiDAR corridor originally swept onto guardrails; it now follows map lane geometry. Stale sensor frames delayed braking under load; bounded current-frame reads fix this. Oncoming cars at 60–80 m were filtered as road after empty height bins; retaining the last height and extending LiDAR range supports early detection. Standard maps crashed the CARLA renderer, so Town02, Town03 and Town05 use layered _Opt variants in final Run B.")
     rows = [("LiDAR corridor hit guardrails", "Follow map lane geometry"), ("Stale sensor frames delayed braking", "Read the current simulation frame"), ("Oncoming cars lost at 60–80 m", "Keep height through empty bins; 185 m range"), ("CARLA renderer crashed on standard maps", "Use Town02/03/05_Opt variants")]
@@ -145,10 +153,10 @@ def closing(prs: Presentation) -> None:
         box(s, "→", 6.45, y, 0.45, 0.6)
         box(s, fix, 7.0, y, 5.5, 0.9, 21)
         rule(s, 0.8, y+1.0, 11.7)
-    s = new_slide(prs, "Limitations & next steps", "Run B includes selected moving traffic, but not pedestrians or dense traffic. Map steering and map corridor geometry remain dependencies. Camera testing is small and town-dependent. Noise testing is limited to one town and range-noise level; it achieved 15/15, with obstacle-distance MAE about 1.1 m. Junction navigation is not implemented and remains Khalid's E5 card. The final matrix uses _Opt maps for renderer compatibility.")
+    s = new_slide(prs, "Limitations & next steps", "Run B includes selected moving traffic, but not pedestrians or dense traffic. Map steering and map corridor geometry remain dependencies. Camera testing is small and town-dependent. Noise testing is limited to one town and range-noise level; it achieved 15/15, with obstacle-distance MAE about 1.1 m. Run D still shows pure-pursuit corner cutting at junction exits. Junctions have no traffic-light or right-of-way handling, and routes were tested without other traffic apart from a parked obstacle. The final matrix uses _Opt maps for renderer compatibility.")
     box(s, "Current limits", 0.8, 1.6, 5.6, 0.6, 24, True)
     box(s, "Next steps", 7.0, 1.6, 5.5, 0.6, 24, True)
-    pairs = [("Map steering in final Run B", "Improve camera robustness across towns"), ("Lead-brake / oncoming non-completions", "Improve stopping convergence and progress"), ("Noise: 15/15 in Town04 only", "Broader sensor / weather / traffic tests"), ("Junction navigation not implemented", "Khalid’s E5 card · junction routing")]
+    pairs = [("Map steering in final Run B", "Improve camera robustness across towns"), ("Lead-brake / oncoming non-completions", "Improve stopping convergence and progress"), ("Routes: no other traffic", "Add traffic lights and right-of-way"), ("Junction exits: pure-pursuit corner cutting", "Improve turn tracking; test with traffic")]
     for i, (limit, step) in enumerate(pairs):
         y = 2.5+i*1.0
         box(s, limit, 0.8, y, 5.6, 0.85, 20)
@@ -174,7 +182,7 @@ def estimated_height(shape: Any, size: int) -> float:
 
 
 def validate(prs: Presentation) -> None:
-    assert 12 <= len(prs.slides) <= 14
+    assert 12 <= len(prs.slides) <= 15
     for slide in prs.slides:
         assert slide.notes_slide.notes_text_frame.text.strip()
         for shape in slide.shapes:
@@ -197,7 +205,7 @@ def main() -> None:
     OUTLINE.clear()
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.333333), Inches(7.5)
-    for build in (intro, methods, evidence, closing):
+    for build in (intro, methods, evidence, navigation, closing):
         build(prs)
     validate(prs)
     prs.save(ROOT / "Group1_Presentation.pptx")

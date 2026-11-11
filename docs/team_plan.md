@@ -57,7 +57,7 @@ Plug-in point: `CarlaAvoidanceBridge(world, ego, cfg, lane_steer_fn=..., obstacl
 | E2 Lane detection | camera lane detection (MVP), lane-keeping controller | Done | offline: 1,674 labelled frames, held-out test 91 % detection, 0.27 m offset error; closed loop camera + LiDAR 17/18 |
 | E3 Obstacle detection | LiDAR obstacle distance + "ahead" flag, adjacent-lane check | Done | 200-run evaluation, distance error 0.3–0.5 m; noise test 15/15 |
 | E4 Collision avoidance | stop vs. avoid logic, emergency stop + speed control, lane-change manoeuvre | Done | 130/130 static and curve runs, 0 collisions |
-| E5 Navigation & integration | integrated pipeline, scenario testing, city navigation (junctions, routing) | Done | 200-run evaluation, moving traffic, route scenarios |
+| E5 Navigation & integration | integrated pipeline, scenario testing, city navigation (junctions, routing) | Done | route_obstacle 30/30, routes reached goal 29/30, 0 collisions |
 | E6 Management & docs | team plan, IEEE report, slides, demo video | Done (Section IV by Khalid to be reviewed) | report PDF, 14-slide deck, 3-min demo reel (release v1.0) |
 
 ## 6. Who made what

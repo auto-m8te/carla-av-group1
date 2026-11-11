@@ -1,0 +1,12 @@
+INFO Town02_Opt route run 1: obstacle 47 m, 9.4 m/s, lane 3.50 m -> collision=False
+INFO Town02_Opt route run 2: obstacle 42 m, 8.7 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town02_Opt route run 3: obstacle 52 m, 6.6 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town02_Opt route run 4: obstacle 41 m, 8.6 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town02_Opt route run 5: obstacle 49 m, 9.1 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town02_Opt route_obstacle run 1: obstacle 44 m, 8.3 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town02_Opt route_obstacle run 2: obstacle 50 m, 9.0 m/s, lane 3.50 m -> collision=False
+INFO Town02_Opt route_obstacle run 3: obstacle 42 m, 7.5 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town02_Opt route_obstacle run 4: obstacle 49 m, 9.3 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town02_Opt route_obstacle run 5: obstacle 49 m, 7.8 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD_Opt.bin 
+INFO:  Found the required file in cache!  Carla/Maps/Nav/Town02_Opt.bin 

@@ -1,7 +1,7 @@
 # Report sections — Omar (draft)
 
 > Section V separates original Run A, final Run B, camera Run C and the noise test.
-> The remaining [[...]] placeholders are teammates' parts.
+> Section IV is assembled from section_iv_innovation.md.
 
 ---
 
@@ -52,6 +52,8 @@ Run A is the original 90-run evaluation with ground-truth obstacle and adjacent-
 Run B (FINAL) contains 200 runs using LiDAR obstacle and adjacent-lane detection with map-waypoint steering. Eight scenarios were tested across Town01, Town02_Opt, Town03_Opt, Town04, Town05_Opt and Town10HD. Coverage is uneven: core scenarios have 30 runs each, curves 20 each, lead scenarios 25 each and oncoming overtakes 20. A dash in the town table means untested, not failure. Town02/03/05 use layered _Opt maps because standard-map renderer crashes prevented reliable execution on this machine.
 
 Run C uses camera lane steering plus LiDAR on Town04, Town03_Opt and Town01: three core scenarios, two runs per combination (18 runs). A separate noise test adds 0.05 m LiDAR range noise on Town04 over 15 core-scenario runs. Neither is a repeat of the full Run B matrix. Sensor reads are synchronised to the simulation frame.
+
+Run D evaluates route and route_obstacle in the same six towns as Run B, with five seeded runs per town/scenario (60 runs), using route steering and LiDAR with no other traffic apart from the parked obstacle. Route success requires reaching the goal before the 90 s limit and |offset from route| <1.5 m outside junctions; route_obstacle requires stopping with minimum gap ≥2 m. Both require no collision.
 
 ### B. Metrics
 
@@ -141,6 +143,28 @@ With 0.05 m LiDAR range noise, Town04 achieved 15/15 successes and zero collisio
 
 *Fig. 4 – figures/Town01_oncoming_overtake_run1.png: Run B waits for oncoming traffic and then overtakes.*
 
+**Table VI(a) – Run D: navigation through junctions (mean (min–max))**
+
+| Scenario | Runs | Success | Collisions | Route length (m) | Junctions passed | Time (s) | Mean speed (m/s) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| route | 30 | 18/30 (60%) | 0 | 348.85 (256.99-437.88) | 3.87 (2.00-6.00) | 56.87 (40.15-90.00) | 6.02 (3.70-7.37) |
+| route_obstacle | 30 | 30/30 (100%) | 0 | 342.97 (262.48-448.31) | 2.87 (1.00-8.00) | 37.98 (12.00-65.00) | 4.91 (2.14-6.04) |
+
+**Table VI(b) – Run D success per town (5 runs per scenario)**
+
+| Town | route | route_obstacle | Collisions |
+| --- | --- | --- | --- |
+| Town01 | 5/5 | 5/5 | 0 |
+| Town02_Opt | 5/5 | 5/5 | 0 |
+| Town03_Opt | 2/5 | 5/5 | 0 |
+| Town04 | 3/5 | 5/5 | 0 |
+| Town05_Opt | 1/5 | 5/5 | 0 |
+| Town10HD | 2/5 | 5/5 | 0 |
+
+Run D achieved 30/30 route_obstacle successes and 18/30 strict route successes, with zero collisions in 60 runs. Nevertheless, 29/30 routes reached the goal: every strict failure except Town05_Opt run 4 ended before 90 s. Of the twelve strict route failures, nine cut corners by 1.5–2.1 m at junction exits, two Town04 runs deviated about 5.2 m during a planned lane change, and Town05_Opt run 4 timed out. Pure-pursuit corner cutting therefore remains a tracking limitation despite the speed-dependent look-ahead fix.
+
+After the detector change, the Town04 and Town01 empty_lane/obstacle_stop/obstacle_avoid regression check passed 30/30 runs with zero collisions.
+
 ### D. Discussion
 
 The core stop and avoid scenarios, both curve scenarios, and lead_vehicle all completed without collisions. These results support the tested controller with LiDAR and map steering. They do not establish camera robustness across the full scenario set.
@@ -178,20 +202,24 @@ Camera closed-loop success was 17/18, with the Town03_Opt road departure. Offlin
 | 19 | Ego could not pull out after waiting for oncoming traffic | Stopping too close left insufficient steering room | Wait 10 m back; use stronger low-speed pull-out gains and creep recovery |
 | 20 | Camera selected road edges or inconsistent boundary pairs | Colour-only masks and weak geometry checks accepted wrong edges | Local contrast, yellow and curb masks; wider ROI; pair checks and lane-width prior |
 | 21 | Camera steering oscillated between estimates | Individual boundary estimates were unstable | Median filter and steering rate limit |
+| 22 | Route planning failed on 5/6 towns | One unsampleable topology segment raised an error | Keep sampled points and close the segment at its endpoint |
+| 23 | LiDAR corridor bent into corner buildings in 90° turns | Forward-distance corridor cannot represent the path after it turns away | Cut the route path where forward distance stops increasing |
+| 24 | Banked road at a Town01 curve read as an obstacle; car stopped 80 s | A flat road patch passed the height threshold | Require cluster vertical span ≥0.25 m |
+| 25 | Corner cutting at junction exits | Fixed look-ahead skipped the corner | Speed-dependent look-ahead: 2 m + 0.5 s·v, clamped 3–6 m |
 
 **Limitations.**
 
-Run A evaluates the original static-obstacle code. Run B adds moving leads and oncoming traffic, but does not cover pedestrians, dense mixed traffic or arbitrary interactions. Its steering and LiDAR corridor still depend on map geometry. Run C demonstrates camera integration on a small core-scenario subset; offline town-dependent errors and the closed-loop collision remain unresolved. The noise experiment covers only Town04 and one range-noise setting, without real sensor artefacts or adverse weather. Five seeded runs per available town/scenario provide limited coverage, and skipped road configurations are not successes. _Opt maps avoid renderer failures but limit claims about standard-map execution. Junction route planning and navigation are not implemented; this is Khalid's E5 card. Gentle lane changes and conservative clearance checks can delay or prevent completion.
+Run A evaluates the original static-obstacle code. Run B adds moving leads and oncoming traffic, but does not cover pedestrians, dense mixed traffic or arbitrary interactions. Its steering and LiDAR corridor still depend on map geometry. Run C demonstrates camera integration on a small core-scenario subset; offline town-dependent errors and the closed-loop collision remain unresolved. The noise experiment covers only Town04 and one range-noise setting, without real sensor artefacts or adverse weather. Five seeded runs per available town/scenario provide limited coverage, and skipped road configurations are not successes. _Opt maps avoid renderer failures but limit claims about standard-map execution. Pure pursuit still cuts corners at junction exits. Junction navigation has no traffic-light or right-of-way handling, and Run D routes contain no other traffic apart from the parked obstacle. Gentle lane changes and conservative clearance checks can delay or prevent completion.
 
 ---
 
 ## VI. Conclusion & Future Work  *(shared: Adil + Abir + Omar)*
 
-This project implemented lane following, LiDAR obstacle detection and a stop/follow/avoid controller in CARLA. The original ground-truth Run A achieved 90/90 successes with zero collisions. Final Run B achieved 194/200 successes with zero collisions across eight scenarios and six towns using LiDAR and map-waypoint steering. Camera steering plus LiDAR achieved 17/18 successes with one collision. The offline held-out lane-detector test achieved 91.2% detection, 0.27 m offset MAE and 73.2% steering-sign agreement. The Town04 LiDAR noise test achieved 15/15 successes. These results show that the tested LiDAR and controller combination handled the selected cases, while camera robustness and timely task completion remain limitations.
+This project implemented lane following, LiDAR obstacle detection and a stop/follow/avoid controller in CARLA. The original ground-truth Run A achieved 90/90 successes with zero collisions. Final Run B achieved 194/200 successes with zero collisions across eight scenarios and six towns using LiDAR and map-waypoint steering. Camera steering plus LiDAR achieved 17/18 successes with one collision. The offline held-out lane-detector test achieved 91.2% detection, 0.27 m offset MAE and 73.2% steering-sign agreement. The Town04 LiDAR noise test achieved 15/15 successes. Navigation Run D achieved 30/30 obstacle stops, 18/30 strict route successes and 29/30 goal arrivals, with zero collisions across 60 runs. These results show that the tested LiDAR and controller combination handled the selected cases, while camera robustness and timely task completion remain limitations.
 
 Future work:
 
-Improve low-speed stopping convergence and safe oncoming-manoeuvre completion; repair camera boundary and heading errors across towns; expand camera and noisy-sensor tests to moving traffic, weather and lighting changes; implement junction navigation (Khalid's E5 card); and compare smoother planned lane-change trajectories [8] with the current PD-style controller.
+Improve low-speed stopping convergence and safe oncoming-manoeuvre completion; repair camera boundary and heading errors across towns; expand camera and noisy-sensor tests to moving traffic, weather and lighting changes; reduce pure-pursuit corner cutting at junction exits, add traffic-light and right-of-way handling at junctions, and evaluate routes with other traffic; and compare smoother planned lane-change trajectories [8] with the current PD-style controller.
 
 ---
 

@@ -6,7 +6,7 @@ We are Group 1 at SRH Berlin, presenting our WS2026/27 project for Prof. A. Labo
 
 ## 2. Problem & goals
 
-The task combines perception, decision making, and vehicle control in a simulated city. The first requirement is to follow a driving lane. The second is to detect obstacles, and the third is to avoid collisions by stopping or steering around them. The fourth is safe navigation, with junction navigation still part of the future work.
+The task combines perception, decision making, and vehicle control in a simulated city. The first requirement is to follow a driving lane. The second is to detect obstacles, and the third is to avoid collisions by stopping or steering around them. The fourth is safe navigation, including implemented route navigation through junctions.
 
 ## 3. Team & roles
 
@@ -18,7 +18,7 @@ The architecture separates sensing, obstacle detection, decision making, and con
 
 ## 5. Obstacle detection
 
-A roof-mounted, 32-channel LiDAR supplies one sweep per tick. A range gate first filters the points, then a lane-shaped corridor from the map selects the relevant path. Road removal uses grade-limited height estimates in 2 m bins. A cluster must contain at least 3 points within 1 m to count as an obstacle.
+A roof-mounted, 32-channel LiDAR supplies one sweep per tick. A range gate first filters the points, then a lane-shaped corridor from the map selects the relevant path. Road removal uses grade-limited height estimates in 2 m bins. A cluster must contain at least 3 points within 1 m and span at least 0.25 m vertically to count as an obstacle.
 
 ## 6. Decision logic
 
@@ -44,15 +44,19 @@ The pipeline combines local-contrast white and yellow masks with curb edges, a w
 
 All three plots are from final Run B. The curve-stop example shows braking on curved geometry. The lead-vehicle example shows FOLLOW. The oncoming example shows waiting before completing the pass and return. These runs use map steering, not camera steering.
 
-## 12. What broke and how we fixed it
+## 12. City navigation
+
+Run D: six towns, five runs per scenario per town. Directed topology graph with Dijkstra and a 30 m parallel-lane-change penalty outside junctions. Pure pursuit uses 2 m + 0.5 s times speed, clamped 3–6 m. Junction and sharp-turn limits are 5 and 4 m/s. The route corridor is cut where it turns away; no overtaking within 25 m of junctions. route_obstacle passed 30/30; route passed 18/30 under the strict offset criterion below 1.5 m outside junctions. 29/30 routes reached the goal, inferred from duration below 90 s; only Town05_Opt run 4 timed out. Nine failures were 1.5–2.1 m corner cutting and two Town04 failures were about 5.2 m during planned lane changes. Zero collisions in 60 runs. Detector regression: Town01 and Town04, empty/stop/avoid, 30/30 and zero collisions.
+
+## 13. What broke and how we fixed it
 
 The LiDAR corridor originally swept onto guardrails; it now follows map lane geometry. Stale sensor frames delayed braking under load; bounded current-frame reads fix this. Oncoming cars at 60–80 m were filtered as road after empty height bins; retaining the last height and extending LiDAR range supports early detection. Standard maps crashed the CARLA renderer, so Town02, Town03 and Town05 use layered _Opt variants in final Run B.
 
-## 13. Limitations & next steps
+## 14. Limitations & next steps
 
-Run B includes selected moving traffic, but not pedestrians or dense traffic. Map steering and map corridor geometry remain dependencies. Camera testing is small and town-dependent. Noise testing is limited to one town and range-noise level; it achieved 15/15, with obstacle-distance MAE about 1.1 m. Junction navigation is not implemented and remains Khalid's E5 card. The final matrix uses _Opt maps for renderer compatibility.
+Run B includes selected moving traffic, but not pedestrians or dense traffic. Map steering and map corridor geometry remain dependencies. Camera testing is small and town-dependent. Noise testing is limited to one town and range-noise level; it achieved 15/15, with obstacle-distance MAE about 1.1 m. Run D still shows pure-pursuit corner cutting at junction exits. Junctions have no traffic-light or right-of-way handling, and routes were tested without other traffic apart from a parked obstacle. The final matrix uses _Opt maps for renderer compatibility.
 
-## 14. Demo / Q&A
+## 15. Demo / Q&A
 
 The recorded demo is in the GitHub release tagged v0.1-demo. It predates the final results. Building these documents does not start CARLA. Final results: Run B 194/200 with zero collisions; Run C 17/18 with one collision. Questions can address detection, control, test coverage and the remaining camera and navigation work.
 
