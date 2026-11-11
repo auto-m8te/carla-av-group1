@@ -55,7 +55,12 @@ class RouteFollower:
 
     def steer(self, vehicle: Any) -> float:
         self.update(vehicle)
-        target = min(len(self.route)-1,bisect.bisect_left(self.arc,self.progress_m+self.lookahead_m))
+        # Speed-dependent look-ahead (pure pursuit): a fixed 6 m cut corners by up to ~2 m at
+        # junction speeds; 2 m + 0.5 s of travel gives ~4 m at 4-5 m/s, 6 m at cruise speed.
+        v = vehicle.get_velocity() if hasattr(vehicle, "get_velocity") else None
+        speed = math.hypot(v.x, v.y) if v is not None else 8.0
+        lookahead = min(self.lookahead_m, max(3.0, 2.0 + 0.5 * speed))
+        target = min(len(self.route)-1,bisect.bisect_left(self.arc,self.progress_m+lookahead))
         forward,right = self._local(vehicle,self.route[target])
         return max(-1.0,min(1.0,math.atan2(right,max(forward,0.1))/math.radians(35)))
 

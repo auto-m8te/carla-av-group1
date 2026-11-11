@@ -241,3 +241,16 @@ def test_sparse_road_returns_do_not_hide_distant_car(adjacent):
         det = detect_obstacle(cloud, cfg, path=path)
         assert det.ahead
         assert det.distance == pytest.approx(64.0 - cfg.ego_half_length)
+
+
+def test_flat_raised_road_patch_is_not_an_obstacle():
+    # Banked road at a curve (CARLA Town01): a flat patch 0.5 m above the estimated
+    # road. It has no vertical extent, unlike a car's rear face.
+    xs, ys = np.meshgrid(np.arange(20.0, 24.0, 0.25), np.arange(-1.0, 1.0, 0.25))
+    slab = np.column_stack([xs.ravel(), ys.ravel(), np.full(xs.size, 0.5)])
+    assert not detect_obstacle(np.vstack([ground(x_max=19.0), slab]), CFG).ahead
+
+
+def test_car_rear_face_still_detected_with_vertical_check():
+    det = detect_obstacle(np.vstack([ground(), box(22.0, 0.0)]), CFG)
+    assert det.ahead and det.distance == pytest.approx(19.6, abs=0.3)

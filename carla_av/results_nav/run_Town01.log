@@ -1,12 +1,12 @@
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 1
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 2
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 3
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 4
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 5
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 1
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 2
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 3
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 4
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 5
+INFO Town01 route run 1: obstacle 42 m, 6.2 m/s, lane 3.50 m -> collision=False
+INFO Town01 route run 2: obstacle 37 m, 7.0 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route run 3: obstacle 35 m, 6.8 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route run 4: obstacle 51 m, 9.4 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route run 5: obstacle 46 m, 7.5 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route_obstacle run 1: obstacle 46 m, 7.6 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route_obstacle run 2: obstacle 50 m, 7.7 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route_obstacle run 3: obstacle 54 m, 8.1 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route_obstacle run 4: obstacle 36 m, 8.5 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
+INFO Town01 route_obstacle run 5: obstacle 53 m, 7.9 m/s, lane 4.00 m (overtake via oncoming lane) -> collision=False
 INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD_Opt.bin 
 INFO:  Found the required file in cache!  Carla/Maps/Nav/Town01.bin 

@@ -46,6 +46,7 @@ class LidarDetectionConfig:
                                     # whole sweep: terrain below an elevated road is lower)
     min_points: int = 3             # points needed to accept a detection
     cluster_depth: float = 1.0      # m, depth window those points must fall into
+    min_vertical_extent: float = 0.25  # m, a cluster must stand up (rejects flat raised road)
     ego_body_margin: float = 0.3    # m around our own car whose returns are ignored
 
 
@@ -150,7 +151,17 @@ def _band_clusters(
     cx, cy, cz = x[mask][order], y[mask][order], z[mask][order]
     counts = np.searchsorted(cx, cx + cfg.cluster_depth, side="right") - np.arange(cx.size)
     indices = np.flatnonzero(keep)[mask][order]
-    return cx, cy, cz, counts, np.flatnonzero(counts >= cfg.min_points), indices
+    candidates = np.flatnonzero(counts >= cfg.min_points)
+    hits = np.array([i for i in candidates if _vertical_extent(cz, i, counts[i]) >= cfg.min_vertical_extent],
+                    dtype=int)
+    return cx, cy, cz, counts, hits, indices
+
+
+def _vertical_extent(cz: np.ndarray, start: int, count: int) -> float:
+    """Height span of a cluster window: real obstacles (car rears, poles, walls) stand up;
+    a banked or raised patch of road that clears the height threshold is flat."""
+    window = cz[start:start + count]
+    return float(window.max() - window.min())
 
 
 def detect_obstacle(

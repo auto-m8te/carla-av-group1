@@ -118,7 +118,7 @@ def test_lidar_oncoming_warmup_approach_and_departure(monkeypatch):
     xs, ys = np.meshgrid(np.arange(-15, 60, 0.5), np.arange(-6, 2, 0.5))
     road = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)])
     for x in (50.0, 49.65, 49.3, 8.0, -8.0):
-        car = np.array([[x, -3.5, 0.8], [x, -3.4, 0.9], [x, -3.6, 1.0]])
+        car = np.array([[x, -3.5, 0.6], [x, -3.4, 1.0], [x, -3.6, 1.4]])
         detector._points = np.vstack([road, car])
         detector.world.get_snapshot().frame += 1
         assert not detector.adjacent_lane_clear(Waypoint(), -3.5, 3.5)
@@ -229,7 +229,7 @@ def test_lidar_zero_lookbehind_keeps_bumper_band(monkeypatch, x, expected):
     detector._refresh = lambda: False
     xs, ys = np.meshgrid(np.arange(-15, 60, 0.5), np.arange(-6, 2, 0.5))
     road = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)])
-    car = np.array([[x, -3.5, 0.8], [x, -3.4, 0.9], [x, -3.6, 1.0]])
+    car = np.array([[x, -3.5, 0.6], [x, -3.4, 1.0], [x, -3.6, 1.4]])
     detector._points = np.vstack([road, car])
     assert detector.adjacent_lane_clear(Waypoint(), -3.5, 3.5, 0.0) == expected
     assert path_calls[0]["behind"] == 0.0

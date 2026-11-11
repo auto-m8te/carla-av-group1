@@ -1,12 +1,12 @@
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 1
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 2
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 3
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 4
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 5
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 1
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 2
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 3
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 4
-WARNING No usable navigation route (250-450 m, two junctions); skipping run 5
+INFO Town05_Opt route run 1: obstacle 48 m, 8.1 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt route run 2: obstacle 43 m, 6.1 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt route run 3: obstacle 44 m, 6.3 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt route run 4: obstacle 54 m, 9.1 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt route run 5: obstacle 54 m, 7.1 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt route_obstacle run 1: obstacle 52 m, 9.5 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt route_obstacle run 2: obstacle 48 m, 9.9 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt route_obstacle run 3: obstacle 54 m, 7.5 m/s, lane 3.50 m -> collision=False
+INFO Town05_Opt route_obstacle run 4: obstacle 44 m, 8.5 m/s, lane 3.50 m (overtake via oncoming lane) -> collision=False
+INFO Town05_Opt route_obstacle run 5: obstacle 36 m, 10.0 m/s, lane 3.50 m -> collision=False
 INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD_Opt.bin 
 INFO:  Found the required file in cache!  Carla/Maps/Nav/Town05_Opt.bin 
