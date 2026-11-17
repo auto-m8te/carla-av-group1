@@ -1,0 +1,6 @@
+town,scenario,run,success,collision,duration_s,lane_rms_m,lane_max_m,reaction_distance_m,reaction_time_s,min_gap_m,final_offset_m,perception_mae_m,perception_missed,perception_false,adjacent_disagree,lane_conf_mean,lane_lost_ticks,waited_for_oncoming,route_length_m,junctions_passed,time_s,mean_speed,red_light_violations,speeding_s,off_road_s,near_misses
+Town03_Opt,emergency_vehicle,1,True,False,32.3,0.25081660173710096,0.3726590001469958,,-22.05,20.86242888495326,-0.3726590001469958,0.9671653708176954,63,3,123,,0,False,,,,,,0.0,0.0,0
+Town03_Opt,empty_lane,1,True,False,15.85,0.07063220853791491,0.25083265329431015,,,,0.0001678840186336572,,0,0,65,,0,False,,,,,,0.0,0.0,0
+Town03_Opt,obstacle_avoid,1,True,False,13.05,0.0407014015743043,0.2935019691917091,26.24630433693528,2.55,11.803206268697977,-0.2935019691917091,0.35264173783000236,2,0,19,,0,False,,,,,,0.0,0.0,0
+Town03_Opt,obstacle_stop,1,True,False,10.85,0.0003589391378434135,0.000686833766341266,11.96732822433114,7.3,9.799950752407312,0.0005572202893660005,0.22926486293793819,0,0,21,,0,False,,,,,,0.0,0.0,0
+Town03_Opt,pedestrian_crossing,1,True,False,14.7,0.0002695688537080604,0.0011295585618995574,14.175263203680515,0.0,9.95668963342905,0.00024434669457917835,0.43969688365856807,0,3,164,,0,False,,,,,,0.0,0.0,0

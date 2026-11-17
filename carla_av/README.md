@@ -290,3 +290,71 @@ time, and mean speed. Simulator validation is still required.
 
 `--scenario everything` includes navigation. `--scenario all` retains the
 original three scenarios and their CSV layout and timeout.
+
+## Adopted from Prithiv's Lanebot (ROS 2)
+
+Prithiv's `Lanebot` (in `../prithiv/`, ROS 2 Jazzy on Ubuntu, Town04 motorway) drives with
+German traffic rules. It does not run on the team's Windows CARLA machine, so its ideas
+were ported into this pipeline rather than its nodes:
+
+| Idea (Lanebot file) | Here | Why |
+|---|---|---|
+| Stanley steering + curve feed-forward (`control_node.py`) | `navigation/route_follower.py`, default `--route-steer stanley` | pure pursuit cut corners at junction exits (Run D: 18/30 strict routes) |
+| Stop at red / amber lights on the route (`signals_node.py`, StVO §37) | `navigation/traffic_lights.py`, on by default for routes (`--ignore-lights` = old behaviour) | Run D drove through red lights |
+| Target lane must continue ahead (`left_room`) | `CarlaAvoidanceBridge.target_lane_continues` | never pull out into a lane that ends beside the obstacle |
+| Overtake only across a broken line (`left_allowed`, StVO §5) | `--obey-markings` (off by default) | legal overtakes; off by default because our scenarios bypass parked cars on two-lane roads |
+| Indicators during lane changes (`signals_node.py`) | `CarlaAvoidanceBridge._set_indicator` | visible intent in CARLA and in videos |
+
+Stanley: `wheel = heading_error + atan(k·e / (v + 1)) + atan(L·κ)` at the front axle,
+k = 1.0, L = 2.9 m, κ from the route over the next 5 m; divided by the vehicle's maximum
+wheel angle.
+
+A red light is passed to the controller as a stationary obstacle at the stop line
+(bumper gap, adjacent lane closed), so the existing stop logic handles it. At amber the
+car stops only if `v²/(2·4 m/s²)` fits before the line. Routes get 300 s instead of 90 s
+when lights are obeyed. CSVs add `light_gap` and `red_light_violations` (front bumper
+crossing a stop line while red); `obstacle_distance` stays the perception value only.
+
+Not adopted: the ROS 2 bridge and node layout (Linux only; asynchronous wall-clock timing
+would break our seeded synchronous runs), emergency-vehicle yielding and the instrument
+cluster (no scenario to evaluate them yet), and the time-based overtaking (we use the
+LiDAR clearance projection instead).
+
+### City scenarios, emergency vehicles, pedestrians and the instrument cluster
+
+- `--scenario city` runs `pedestrian_crossing` and `emergency_vehicle`.
+  - `pedestrian_crossing`: a pedestrian waits on the kerb 35-55 m ahead and crosses (1.4 m/s)
+    when we are 28 m away. LiDAR detects them; the car stops and drives on once the road is
+    clear. Success: no collision, drove 50 m, minimum gap >= 2 m.
+  - `emergency_vehicle`: an ambulance (blue lights) starts 45 m behind at 11 m/s and passes in
+    the other lane. The car switches to `YIELD` (right indicator, 0.7 m to the right, half
+    speed) while it is between 120 m behind and 30 m ahead. Success: no collision, `YIELD`
+    used, ambulance ends in front of us.
+- Overtaking is blocked while a pedestrian is near the road ahead or an emergency vehicle is
+  around. Emergency vehicles and pedestrians "near the road" are read from the simulator (as in
+  Prithiv's `signals_node`); detection and stopping still come from the LiDAR.
+- Red lights: the stop line is reported to the controller `light_stop_shift` = 4 m further
+  away than it is, so the car waits 1.6-3.6 m before the line instead of 5.6-7.6 m.
+- `--cluster` opens the instrument cluster (Prithiv's `cluster_node`, needs `pygame`):
+  speedometer + speed limit, top-down LiDAR view, mode, indicators, warning banners.
+- `.\demo.ps1 city` runs the city scenarios live with the cluster (see `demo.ps1`).
+
+### Speed rules, traffic, night and the rule checker (also from Prithiv's Lanebot)
+
+- **Speed rules** (`avoidance/traffic_rules.py`, `control_node.target_speed`): at most 90 % of the
+  signed limit, slow down early enough to reach a lower limit at its sign, and never faster than
+  we can stop within the sensor range. On by default; `--ignore-limits` restores the old behaviour.
+- **Traffic** (`scenarios/traffic.py`, `traffic_node`): `--traffic N` spawns N Traffic-Manager cars
+  25-180 m around us: a slow lorry, a police car with blue lights, and cars 0-40 % below the limit.
+  Synchronous Traffic Manager, seeded; cars are released before they are destroyed.
+- **Night** (`signals_node`): `--night` switches to night; high beam is dipped whenever a vehicle
+  is within 200 m ahead.
+- **Rule checker** (`scenarios/rule_monitor.py`, `tools/monitor.py`): every tick logs
+  `speeding` (> 3 km/h over the limit), `off_road` and `near_miss` (another road user < 1 m);
+  the analysis adds a *Traffic-rule check* table.
+- Not taken: merging 3 LiDAR sweeps (smears moving cars over 3 frames; our detector reads the
+  exact current frame), siren audio (CARLA has none), ROS 2 launch scripts and the Gazebo draft.
+
+Check run (Town03_Opt, night, 12 traffic cars, 1 run each): empty_lane, obstacle_stop,
+obstacle_avoid, pedestrian_crossing, emergency_vehicle 5/5, no collisions, 0 s speeding,
+0 s off-road, 0 near misses.

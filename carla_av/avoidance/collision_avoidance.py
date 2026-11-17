@@ -38,6 +38,7 @@ class Mode(str, Enum):
     ABORT = "ABORT"
     PASSING = "PASSING"
     RETURN = "RETURN"
+    YIELD = "YIELD"   # making way for an emergency vehicle (StVO §38, from Prithiv)
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,15 @@ class AvoidanceConfig:
     manoeuvre_extra_time: float = 4.0
     manoeuvre_margin: float = 10.0
     adjacent_detection_range: float = 60.0
+    # Adopted from Prithiv's Lanebot (StVO §5/§7):
+    lane_continue_extra: float = 10.0  # m the target lane must continue past the return point
+    obey_lane_markings: bool = False   # only pull out across a broken line where lane changes are allowed
+    light_stop_shift: float = 4.0      # m: stop this much closer to a stop line than to a parked car
+    yield_offset: float = 0.7          # m right of the lane centre while making way
+    yield_speed_factor: float = 0.5    # drive at half speed while making way
+    emergency_behind: float = 120.0    # m: make way when an emergency vehicle is this close behind
+    emergency_ahead: float = 30.0      # m: ... until it is this far in front of us
+    obey_speed_limits: bool = True     # 90 % of the limit, slow before lower signs, drive on sight
 
     @property
     def manoeuvre_horizon(self) -> float:
@@ -113,6 +123,8 @@ class Perception:
     obstacle_speed: Optional[float] = None
     speed_limit: Optional[float] = None
     near_junction: bool = False
+    emergency_distance: Optional[float] = None  # m to nearest emergency vehicle (- = behind)
+    pedestrian_near: bool = False        # pedestrian close ahead: never overtake
     dt: float = 0.05                     # simulation tick duration, seconds
 
 
@@ -163,6 +175,17 @@ def _cruise_throttle(p: Perception, cfg: AvoidanceConfig, speed_factor: float = 
     if error < -1.0:
         return 0.0  # well above target: coast
     return _clamp(cfg.throttle_feedforward + cfg.speed_kp * error, 0.0, cfg.max_throttle)
+
+
+def emergency_near(p: Perception, cfg: AvoidanceConfig) -> bool:
+    d = p.emergency_distance
+    return d is not None and -cfg.emergency_behind < d < cfg.emergency_ahead
+
+
+def _yield_command(p: Perception, cfg: AvoidanceConfig) -> ControlCommand:
+    """Make way (StVO §38): slow down and move to the right edge of our lane."""
+    steer = _steer_to_offset(cfg.yield_offset, p, cfg)
+    return ControlCommand(_cruise_throttle(p, cfg, cfg.yield_speed_factor), steer, 0.0, Mode.YIELD)
 
 
 def _avoid_command(p: Perception, cfg: AvoidanceConfig, steer: float) -> ControlCommand:
@@ -299,7 +322,8 @@ def decide(
     state: AvoidanceState, p: Perception, cfg: AvoidanceConfig
 ) -> tuple[AvoidanceState, ControlCommand]:
     """Pure transition function: (state, perception) -> (new_state, command)."""
-    if p.near_junction:
+    # No overtaking near junctions, near pedestrians, or with an emergency vehicle around.
+    if p.near_junction or p.pedestrian_near or emergency_near(p, cfg):
         p = replace(p, adjacent_lane_clear=False)
     moving = (p.obstacle_distance is not None and p.obstacle_speed is not None
               and p.obstacle_speed > cfg.moving_speed)
@@ -352,6 +376,8 @@ def _road_step(
     target_offset = cfg.avoid_side * cfg.lane_width
     # 5. CRUISE / BRAKE / STOPPED / EMERGENCY_STOP: decide stop vs. steer-around.
     if dist is None:
+        if emergency_near(p, cfg):
+            return AvoidanceState(mode=Mode.YIELD), _yield_command(p, cfg)
         return AvoidanceState(), ControlCommand(
             _cruise_throttle(p, cfg), p.lane_steer, 0.0, Mode.CRUISE
         )
@@ -382,6 +408,8 @@ def _road_step(
         command = _brake_command(p, cfg)
         return replace(state, mode=command.mode), command
 
+    if emergency_near(p, cfg):
+        return replace(state, mode=Mode.YIELD), _yield_command(p, cfg)
     # Obstacle seen but still far away: keep driving, ease off throttle.
     return replace(state, mode=Mode.CRUISE), ControlCommand(
         _cruise_throttle(p, cfg, cfg.approach_speed_factor), p.lane_steer, 0.0, Mode.CRUISE

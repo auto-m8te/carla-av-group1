@@ -30,3 +30,9 @@ carla_av/results_full_lidar/
 carla_av/results_final_lidar/
 carla_av/results_final_lidar_patch/
 report/video/csv/
+# Scratch demo runs and the paused navigation re-evaluation
+carla_av/results_demo_live/
+carla_av/results_demo_prof/
+carla_av/results_light_check/
+carla_av/results_nav_lights/
+carla_av/results_nav_stanley/

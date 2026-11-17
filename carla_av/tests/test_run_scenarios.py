@@ -221,7 +221,8 @@ def test_camera_lane_flags_and_columns(monkeypatch):
     args = _parse_args()
     assert args.lane == 'camera'
     assert args.lane_debug == 'overlays'
-    assert CSV_FIELDS[-3:] == ('lane_conf', 'lane_offset_cam', 'gt_lane_steer')
+    assert CSV_FIELDS[-7:] == ('lane_conf', 'lane_offset_cam', 'gt_lane_steer',
+                              'speed_limit_map', 'speeding', 'off_road', 'near_miss')
 
 def test_camera_log_values():
     from scenarios.run_scenarios import lane_log_values

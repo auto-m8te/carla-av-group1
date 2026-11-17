@@ -38,8 +38,12 @@ from perception.camera_sensor import CameraLaneModule
 from perception.lidar_sensor import LidarMount, LidarObstacleDetector
 
 from navigation.route_planner import plan_route
-from navigation.route_follower import RouteFollower
+from navigation.route_follower import STEER_MODES, RouteFollower
+from navigation.traffic_lights import RouteTrafficLights
+from scenarios.cluster import ClusterState, InstrumentCluster
 from scenarios.hud_colors import HUD_COLORS
+from scenarios.rule_monitor import rule_values
+from scenarios.traffic import release_traffic, spawn_traffic
 from scenarios.video_recorder import VideoRecorder
 
 log = logging.getLogger("scenarios")
@@ -48,6 +52,16 @@ SCENARIOS = ("empty_lane", "obstacle_stop", "obstacle_avoid")
 CURVE_SCENARIOS = ("curve_lane", "curve_stop")
 MOVING_SCENARIOS = ("lead_vehicle", "lead_brake", "oncoming_overtake")
 NAVIGATION_SCENARIOS = ("route", "route_obstacle")
+CITY_SCENARIOS = ("pedestrian_crossing", "emergency_vehicle")   # from Prithiv's traffic ideas
+AMBULANCE_BEHIND_M = 45.0
+PEDESTRIAN_PLANS: dict[int, tuple] = {}   # walker id -> (direction, crossing distance)
+AMBULANCE_SPEED = 11.0          # m/s (~40 km/h), well above our cruise speed
+AMBULANCE_PASS_START_M = 30.0   # pull out when this close behind us
+AMBULANCE_PASS_DONE_M = 15.0    # pull back in when this far ahead of us
+AMBULANCE_DONE_M = 40.0         # scenario ends when the ambulance is this far ahead
+PEDESTRIAN_TRIGGER_M = 28.0     # pedestrian starts crossing when we are this close
+PEDESTRIAN_SPEED = 1.4          # m/s, normal walking pace
+PEDESTRIAN_PAST_M = 30.0        # scenario ends this far past the crossing point
 CURVE_WINDOW_M = 80.0
 CURVE_HEADING_RANGE = (45.0, 120.0)
 
@@ -74,8 +88,12 @@ CSV_FIELDS = (
     "det_tag", "adj_tag",
     "obstacle_speed", "other_speed", "other_gap",
     "lane_conf", "lane_offset_cam", "gt_lane_steer",
+    "speed_limit_map", "speeding", "off_road", "near_miss",   # rule checks (Prithiv's monitor)
 )
-NAVIGATION_FIELDS = ("route_progress", "route_remaining", "in_junction", "speed_limit")
+NAVIGATION_FIELDS = ("route_progress", "route_remaining", "in_junction", "speed_limit",
+                     "light_gap", "red_light_violations")
+ROUTE_SECONDS = 90.0
+ROUTE_SECONDS_WITH_LIGHTS = 300.0   # CARLA red phases last 20-30 s; a route can meet 5 lights
 PERCEPTION_SOURCES = ("groundtruth", "lidar")
 
 
@@ -109,6 +127,12 @@ class RunParams:
     record_video: Optional[str] = None
     route: Optional[RouteFollower] = None
     lidar_noise: float = 0.0   # LiDAR range noise std-dev in metres (robustness test)
+    route_steer: str = "stanley"   # route steering: Stanley (Prithiv) or pure pursuit
+    traffic_lights: bool = True     # stop at red/amber lights on routes
+    obey_markings: bool = False     # overtake only across broken lines
+    cluster: bool = False           # show the instrument cluster window
+    traffic: int = 0                # Traffic-Manager cars around us (Prithiv's traffic_node)
+    night: bool = False             # night: headlights with high-beam dipping
 
 
 def scripted_speed_control(speed: float, target: float) -> tuple[float, float]:
@@ -144,6 +168,10 @@ def scenario_road_length(params: RunParams) -> float:
         length = max(140.0 if params.scenario != "oncoming_overtake" else params.obstacle_m + 60.0, length)
     if params.scenario == "lead_brake":
         length = max(length, params.obstacle_m + LEAD_DRIVE_M + LEAD_BRAKING_M + 20.0)
+    if params.scenario == "emergency_vehicle":
+        length = max(length, 160.0)
+    if params.scenario == "pedestrian_crossing":
+        length = max(length, params.obstacle_m + PEDESTRIAN_PAST_M + 10.0)
     return length
 
 
@@ -161,7 +189,8 @@ def lidar_mount(params: "RunParams", cfg: AvoidanceConfig) -> LidarMount:
 
 
 def scenario_config(base: AvoidanceConfig, params: RunParams, lane_width: float) -> AvoidanceConfig:
-    cfg = replace(base, target_speed=params.target_speed, lane_width=lane_width)
+    cfg = replace(base, target_speed=params.target_speed, lane_width=lane_width,
+                  obey_lane_markings=params.obey_markings)
     if params.scenario in MOVING_SCENARIOS:
         # Hold outside the emergency zone so a waiting ego can resume its overtake.
         cfg = replace(cfg, adjacent_detection_range=180.0,
@@ -203,6 +232,111 @@ class ScriptedDriver:
         if self.scenario != "oncoming_overtake":
             gap = self.gap(ego)
         return {"other_speed": speed_of(self.actor), "other_gap": _blank(gap)}
+
+
+def _signed_gap(ego: carla.Vehicle, actor: carla.Actor) -> float:
+    """Bumper gap along ego's heading: + = actor ahead of us, - = behind."""
+    tf = ego.get_transform()
+    d = actor.get_location() - tf.location
+    fwd = tf.get_forward_vector()
+    along = d.x * fwd.x + d.y * fwd.y
+    half = ego.bounding_box.extent.x + actor.bounding_box.extent.x
+    return along - half if along > 0 else along + half
+
+
+class AmbulanceDriver:
+    """Ambulance with blue lights coming up from behind; it pulls into the other lane to
+    pass us and returns (Prithiv's traffic_node emergency event, scripted so runs repeat)."""
+
+    def __init__(self, world: carla.World, actor: carla.Vehicle, ego: carla.Vehicle,
+                 cfg: AvoidanceConfig) -> None:
+        self.actor, self.ego, self.cfg = actor, ego, cfg
+        self.map = world.get_map()
+        self.home = self.map.get_waypoint(actor.get_location())
+        self.shift = 0.0
+        lights = (carla.VehicleLightState.Special1 | carla.VehicleLightState.LowBeam
+                  | carla.VehicleLightState.Position)
+        actor.set_light_state(carla.VehicleLightState(lights))   # blue lights / siren
+
+    def _advance_home(self) -> None:
+        loc, tf = self.actor.get_location(), self.home.transform
+        d = loc - tf.location
+        fwd = tf.get_forward_vector()
+        along = d.x * fwd.x + d.y * fwd.y
+        if along > 0.05:
+            options = self.home.next(along) or [self.home]
+            self.home = min(options, key=lambda w: w.transform.location.distance(loc))
+
+    def step(self) -> None:
+        self._advance_home()
+        gap = _signed_gap(self.ego, self.actor)
+        if -AMBULANCE_PASS_START_M < gap < AMBULANCE_PASS_DONE_M:
+            self.shift = self.cfg.avoid_side * self.cfg.lane_width   # pass in the other lane
+        elif gap >= AMBULANCE_PASS_DONE_M:
+            self.shift = 0.0
+        ahead = self.home.next(8.0)
+        target_wp = ahead[0] if ahead else self.home
+        right = target_wp.transform.get_right_vector()
+        target = target_wp.transform.location + carla.Location(x=right.x * self.shift, y=right.y * self.shift)
+        tf = self.actor.get_transform()
+        d = target - tf.location
+        fwd_v, right_v = tf.get_forward_vector(), tf.get_right_vector()
+        forward = d.x * fwd_v.x + d.y * fwd_v.y
+        sideways = d.x * right_v.x + d.y * right_v.y
+        steer = max(-1.0, min(1.0, math.atan2(sideways, max(forward, 0.1)) / math.radians(35)))
+        throttle, brake = scripted_speed_control(speed_of(self.actor), AMBULANCE_SPEED)
+        self.actor.apply_control(carla.VehicleControl(throttle=throttle, brake=brake, steer=steer))
+
+    def log_values(self, ego: carla.Vehicle) -> dict:
+        return {"other_speed": speed_of(self.actor), "other_gap": _signed_gap(ego, self.actor)}
+
+
+class PedestrianDriver:
+    """A pedestrian waits on the pavement and crosses the road when we approach."""
+
+    def __init__(self, walker: carla.Actor, ego: carla.Vehicle, direction: carla.Vector3D,
+                 crossing_m: float) -> None:
+        self.walker, self.ego, self.direction, self.crossing_m = walker, ego, direction, crossing_m
+        self.start: Optional[carla.Location] = None
+        self.done = False
+
+    def step(self) -> None:
+        if self.done:
+            self.walker.apply_control(carla.WalkerControl(direction=self.direction, speed=0.0))
+            return
+        if self.start is None:
+            if self.ego.get_location().distance(self.walker.get_location()) > PEDESTRIAN_TRIGGER_M:
+                return
+            self.start = self.walker.get_location()
+        if self.walker.get_location().distance(self.start) >= self.crossing_m:
+            self.done = True
+            return
+        self.walker.apply_control(carla.WalkerControl(direction=self.direction, speed=PEDESTRIAN_SPEED))
+
+    def log_values(self, ego: carla.Vehicle) -> dict:
+        return {"other_speed": speed_of(self.walker),
+                "other_gap": ego.get_location().distance(self.walker.get_location())}
+
+
+def spawn_pedestrian(world: carla.World, road_wp: carla.Waypoint,
+                     side: int) -> Optional[tuple[carla.Actor, carla.Vector3D, float]]:
+    """Walker on the pavement beside `road_wp`, facing across the road.
+
+    Tries our own kerb first, then the far side of the overtaking lane. Returns
+    (walker, walking direction, crossing distance) or None."""
+    width = road_wp.lane_width
+    right = road_wp.transform.get_right_vector()
+    bp = world.get_blueprint_library().filter("walker.pedestrian.*")[0]
+    if bp.has_attribute("is_invincible"):
+        bp.set_attribute("is_invincible", "false")
+    for lateral in (width / 2 + 1.5, side * (1.5 * width + 1.5)):
+        loc = road_wp.transform.location + carla.Location(x=right.x * lateral, y=right.y * lateral, z=1.0)
+        walker = world.try_spawn_actor(bp, carla.Transform(loc, road_wp.transform.rotation))
+        if walker is not None:
+            sign = -1.0 if lateral > 0 else 1.0     # walk toward the other kerb
+            direction = carla.Vector3D(x=right.x * sign, y=right.y * sign, z=0.0)
+            return walker, direction, 2 * width + 3.0
+    return None
 
 
 def _adjacent(wp: carla.Waypoint, side: int) -> Optional[carla.Waypoint]:
@@ -296,8 +430,11 @@ def spawn_at(world: carla.World, bp_name: str, wp: carla.Waypoint) -> Optional[c
 
 def _scenario_vehicles(start: carla.Waypoint, params: RunParams,
                        cfg: AvoidanceConfig, rng: random.Random) -> list[tuple[str, carla.Waypoint, bool]]:
-    if params.scenario in ("empty_lane", "curve_lane"):
+    if params.scenario in ("empty_lane", "curve_lane", "pedestrian_crossing"):
         return []
+    if params.scenario == "emergency_vehicle":
+        behind = start.previous(AMBULANCE_BEHIND_M)
+        return [("vehicle.ford.ambulance", behind[0], True)] if behind else []
     distance = curve_obstacle_distance(start) if params.scenario == "curve_stop" else params.obstacle_m
     obstacle = start.next(distance)[0]
     moving_lead = params.scenario in ("lead_vehicle", "lead_brake")
@@ -320,6 +457,8 @@ def _spawn_scenario_actors(world: carla.World, start: carla.Waypoint, params: Ru
     vehicles = _scenario_vehicles(start, params, cfg, rng)
     if params.scenario == "oncoming_overtake" and len(vehicles) != 2:
         return []
+    if params.scenario == "emergency_vehicle" and len(vehicles) != 1:
+        return []
     ego = spawn_at(world, "vehicle.tesla.model3", start)
     if ego is None:
         return []
@@ -332,10 +471,21 @@ def _spawn_scenario_actors(world: carla.World, start: carla.Waypoint, params: Ru
             return []
         actor.set_simulate_physics(moving)
         actors.append(actor)
+    if params.scenario == "pedestrian_crossing":
+        crossing = start.next(params.obstacle_m)
+        placed = spawn_pedestrian(world, crossing[0], cfg.avoid_side) if crossing else None
+        if placed is None:
+            for spawned in actors:
+                spawned.destroy()
+            return []
+        walker, direction, distance = placed
+        PEDESTRIAN_PLANS[walker.id] = (direction, distance)
+        actors.append(walker)
     return actors
 
 
-def choose_navigation_route(cmap: carla.Map, rng: random.Random) -> RouteFollower:
+def choose_navigation_route(cmap: carla.Map, rng: random.Random,
+                            steer_mode: str = "stanley") -> RouteFollower:
     candidates = [w for w in cmap.generate_waypoints(20.0)
                   if w.lane_type == carla.LaneType.Driving and not w.is_junction]
     if len(candidates) < 2:
@@ -348,7 +498,7 @@ def choose_navigation_route(cmap: carla.Map, rng: random.Random) -> RouteFollowe
             continue
         if not points:
             continue
-        route = RouteFollower(points)
+        route = RouteFollower(points, steer_mode=steer_mode)
         entries = sum(p.is_junction and (i == 0 or not points[i-1].is_junction)
                       for i,p in enumerate(points))
         if 250 <= route.remaining_m <= 450 and entries >= 2:
@@ -438,6 +588,11 @@ def is_finished(scenario: str, row: dict, stopped_for: float, passed_m: float) -
         return stopped_for >= STOP_HOLD_SECONDS
     if scenario in ("obstacle_avoid", "oncoming_overtake"):
         return passed_m >= PASS_DONE_M and row["mode"] == Mode.CRUISE.value
+    if scenario == "emergency_vehicle":
+        gap = row.get("other_gap")
+        return gap not in (None, "") and float(gap) >= AMBULANCE_DONE_M
+    if scenario == "pedestrian_crossing":
+        return passed_m >= PEDESTRIAN_PAST_M
     return row["odometer"] >= (120.0 if scenario == "lead_vehicle" else EMPTY_LANE_M)
 
 
@@ -486,12 +641,50 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
                   camera: Optional[CameraLaneModule] = None,
                   recorder: Optional[VideoRecorder] = None) -> None:
     gt_lane_fn = waypoint_lane_steer(world)
+    cluster = InstrumentCluster() if params.cluster else None
+    try:
+        _drive_loop(world, ego, bridge, ctrl, params, out, collided, gt_fn, gt_lane_fn,
+                    detector, other, camera, recorder, cluster)
+    finally:
+        if cluster is not None:
+            cluster.close()
+
+
+def cluster_state(bridge, params, p, cmd, detector) -> ClusterState:
+    """Snapshot for the instrument cluster (Prithiv's dashboard)."""
+    limit = None
+    try:
+        limit = bridge.vehicle.get_speed_limit() / 3.6
+    except (AttributeError, RuntimeError):
+        pass
+    blink = bridge._blinker
+    out_left = bridge.config.avoid_side < 0
+    side = {"out": "left" if out_left else "right", "back": "right" if out_left else "left",
+            "right": "right"}.get(blink) if blink else None
+    points = getattr(detector, "_points", None) if detector is not None else None
+    return ClusterState(
+        speed=p.speed, limit=limit, mode=cmd.mode.value, blinker=side,
+        obstacle=bridge.raw_obstacle_distance, lateral_offset=p.lateral_offset,
+        heading_error=p.heading_error,
+        curvature=params.route.curvature() if params.route else 0.0,
+        lane_width=bridge.config.lane_width, overtake_side=bridge.config.avoid_side,
+        adjacent_clear=p.adjacent_lane_clear, light_gap=bridge.light_gap,
+        emergency_distance=bridge.emergency_distance, emergency_kind=bridge.emergency_kind,
+        pedestrian_near=bridge.pedestrian_near,
+        **({"points": points} if points is not None else {}),
+    )
+
+
+def _drive_loop(world, ego, bridge, ctrl, params, out: Path, collided: dict, gt_fn, gt_lane_fn,
+                detector, other, camera, recorder, cluster) -> None:
     partial = out.with_suffix(".partial")  # renamed only when the run ends normally
     with partial.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS + (NAVIGATION_FIELDS if params.route else ()))
         writer.writeheader()
         t, stopped_for = 0.0, 0.0
-        while t < (90.0 if params.route else MAX_SECONDS):
+        limit = ((ROUTE_SECONDS_WITH_LIGHTS if bridge.traffic_lights is not None else ROUTE_SECONDS)
+                 if params.route else MAX_SECONDS)
+        while t < limit:
             tick_start = time.perf_counter()
             if other is not None:
                 other.step()
@@ -501,7 +694,7 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
             loc = ego.get_location()
             row = dict(
                 t=round(t, 3), x=loc.x, y=loc.y, speed=p.speed, mode=cmd.mode.value,
-                obstacle_distance=_blank(p.obstacle_distance),
+                obstacle_distance=_blank(bridge.raw_obstacle_distance),  # perception, without lights
                 lateral_offset=p.lateral_offset, adjacent_lane_clear=int(p.adjacent_lane_clear),
                 throttle=cmd.throttle, steer=cmd.steer, brake=cmd.brake,
                 odometer=p.distance_travelled, collision=int(collided["hit"]),
@@ -519,23 +712,30 @@ def drive_and_log(world, ego, bridge, ctrl, params, out: Path, collided: dict,
             row.update(other.log_values(ego) if other is not None else
                        {"other_speed": "", "other_gap": ""})
             row.update(lane_log_values(camera, gt_lane_fn(ego)))
+            row.update(rule_values(world, ego, p.speed, bridge.map_speed_limit_kmh))
             if params.route:
                 row.update(route_progress=params.route.progress_m if params.route else "",
                        route_remaining=params.route.remaining_m if params.route else "",
                        in_junction=int(params.route.current.is_junction) if params.route else "",
-                       speed_limit=_blank(p.speed_limit))
+                       speed_limit=_blank(p.speed_limit), light_gap=_blank(bridge.light_gap),
+                       red_light_violations=(bridge.traffic_lights.violations
+                                             if bridge.traffic_lights is not None else ""))
             writer.writerow(row)
             if recorder is not None:
                 recorder.add_frame(cmd.mode, p.speed, p.obstacle_distance, {
                     "scenario": params.scenario, "town": params.town, "run": params.run,
                     "lane_source": params.lane_source, "obstacle_source": params.obstacle_source,
                 })
-            stopped_for = stopped_for + FIXED_DT if cmd.mode == Mode.STOPPED else 0.0
+            # Waiting at a red light is not the stop the scenario asks for.
+            at_light = bridge.light_gap is not None and p.obstacle_distance == bridge.light_gap
+            stopped_for = stopped_for + FIXED_DT if cmd.mode == Mode.STOPPED and not at_light else 0.0
             if ((params.route.done if params.scenario == "route" else
                  is_finished(params.scenario, row, stopped_for, p.distance_travelled - params.obstacle_m))
                     or row["collision"]):
                 break
             follow_camera(world, ego)
+            if cluster is not None:
+                cluster.update(cluster_state(bridge, params, p, cmd, detector))
             if params.hud:
                 draw_hud(world, ego, cmd.mode, p.speed, p.obstacle_distance)
                 draw_detection(world, detector)
@@ -621,13 +821,21 @@ def _drive_actors(world: carla.World, actors: list[carla.Actor], cfg: AvoidanceC
         adjacent_clear_fn=detector.adjacent_lane_clear if params.adjacent_source == "lidar" else None,
         tracking_distance_fn=(ground_truth_obstacle_distance(world, interpolate=True, route=params.route)
                               if params.obstacle_source == "groundtruth" else None),
+        traffic_lights=(RouteTrafficLights.from_world(world, params.route)
+                        if params.route is not None and params.traffic_lights else None),
     )
+    bridge.night = params.night
     other = None
     if params.scenario in MOVING_SCENARIOS:
         oncoming = params.scenario == "oncoming_overtake"
         actor = actors[2] if oncoming else actors[1]
         target = rng.uniform(6.0, 8.0) if oncoming else params.target_speed * rng.uniform(0.4, 0.6)
         other = ScriptedDriver(world, actor, params.scenario, target)
+    elif params.scenario == "emergency_vehicle":
+        other = AmbulanceDriver(world, actors[1], ego, cfg)
+    elif params.scenario == "pedestrian_crossing":
+        direction, distance = PEDESTRIAN_PLANS.pop(actors[1].id)
+        other = PedestrianDriver(actors[1], ego, direction, distance)
     recorder = None
     try:
         if params.record_video:
@@ -654,7 +862,7 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
     try:
         try:
             if params.scenario in NAVIGATION_SCENARIOS:
-                params = replace(params,route=choose_navigation_route(world.get_map(),rng))
+                params = replace(params, route=choose_navigation_route(world.get_map(), rng, params.route_steer))
             actors, start = setup_scenario(world, params, base_cfg, rng)
         except (NoUsableCurve, NoOncomingRoad, NoUsableRoad) as exc:
             log.warning("%s; skipping run %d", exc, params.run)
@@ -665,6 +873,11 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
         lane_gap = (start.transform.location.distance(adj.transform.location)
                     if adj is not None else base_cfg.lane_width)
         cfg = scenario_config(base_cfg, params, lane_gap)
+        if params.night:
+            world.set_weather(carla.WeatherParameters.ClearNight)
+        traffic = spawn_traffic(client, world, actors[0], params.traffic, rng,
+                                keep_clear=[a.get_location() for a in actors[1:]])
+        actors.extend(traffic)
         out = out_dir / f"{params.scenario}_run{params.run}.csv"
         collision = _drive_actors(world, actors, cfg, params, rng, out, start)
         oncoming = adj is not None and adj.lane_id * start.lane_id < 0
@@ -673,6 +886,8 @@ def run_once(client: carla.Client, params: RunParams, out_dir: Path, base_cfg: A
                  lane_gap, " (overtake via oncoming lane)" if oncoming else "", collision)
         return out
     finally:
+        if params.traffic:
+            release_traffic(client, [a for a in actors if a.attributes.get("role_name", "").startswith("traffic_")])
         _teardown(client, world, settings, actors)
 
 
@@ -684,7 +899,8 @@ def _parse_args() -> argparse.Namespace:
                     help="seconds to wait for CARLA (map loads on a cold start can exceed 60 s)")
     ap.add_argument("--towns", nargs="+", default=list(DEFAULT_TOWNS))
     ap.add_argument("--scenario", choices=(*SCENARIOS, *CURVE_SCENARIOS, *MOVING_SCENARIOS, *NAVIGATION_SCENARIOS,
-                                         "all", "curves", "moving", "navigation", "everything"), default="all")
+                                         *CITY_SCENARIOS, "all", "curves", "moving", "navigation", "city",
+                                         "everything"), default="all")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--first-run", type=int, default=1, help="start numbering at this run (re-run one seed)")
     ap.add_argument("--out", default="results")
@@ -702,6 +918,19 @@ def _parse_args() -> argparse.Namespace:
                     help="use semantic LiDAR and log the object tag behind detections")
     ap.add_argument("--lane", choices=("groundtruth", "camera"), default="groundtruth")
     ap.add_argument("--lane-debug", metavar="DIR", help="save camera lane overlays")
+    ap.add_argument("--route-steer", choices=STEER_MODES, default="stanley",
+                    help="route steering: Stanley + curve feed-forward, or the old pure pursuit")
+    ap.add_argument("--ignore-lights", action="store_true",
+                    help="drive routes without stopping at traffic lights (old behaviour)")
+    ap.add_argument("--traffic", type=int, default=0, metavar="N",
+                    help="add N Traffic-Manager cars around us: lorry, police, cars (Prithiv's traffic_node)")
+    ap.add_argument("--night", action="store_true", help="night: headlights, high beam dipped for other cars")
+    ap.add_argument("--ignore-limits", action="store_true",
+                    help="ignore speed limits / signs / sight distance (old behaviour)")
+    ap.add_argument("--cluster", action="store_true",
+                    help="show the instrument cluster window (from Prithiv's Lanebot)")
+    ap.add_argument("--obey-markings", action="store_true",
+                    help="overtake only across broken lines where lane changes are allowed")
     return ap.parse_args()
 
 
@@ -711,10 +940,11 @@ def main() -> None:
 
     client = carla.Client(args.host, args.port)
     client.set_timeout(args.timeout)
-    base_cfg = AvoidanceConfig()
+    base_cfg = AvoidanceConfig(obey_speed_limits=not args.ignore_limits)
     groups = {"all": SCENARIOS, "curves": CURVE_SCENARIOS, "moving": MOVING_SCENARIOS,
-              "navigation": NAVIGATION_SCENARIOS,
-              "everything": SCENARIOS + CURVE_SCENARIOS + MOVING_SCENARIOS + NAVIGATION_SCENARIOS}
+              "navigation": NAVIGATION_SCENARIOS, "city": CITY_SCENARIOS,
+              "everything": SCENARIOS + CURVE_SCENARIOS + MOVING_SCENARIOS + NAVIGATION_SCENARIOS
+              + CITY_SCENARIOS}
     scenarios = groups.get(args.scenario, (args.scenario,))
     for town in args.towns:
         # Reloading the map that is already loaded has crashed CARLA 0.9.16 on Windows.
@@ -732,6 +962,9 @@ def main() -> None:
                     target_speed=round(rng.uniform(*TARGET_SPEED_RANGE), 2),
                     lane_source=args.lane, lane_debug=args.lane_debug, record_video=args.record_video,
                     lidar_debug=args.lidar_debug, lidar_noise=args.lidar_noise, realtime=args.realtime, hud=args.hud, obstacle_source=args.obstacle, adjacent_source=args.adjacent,
+                    route_steer=args.route_steer, traffic_lights=not args.ignore_lights,
+                    obey_markings=args.obey_markings, cluster=args.cluster,
+                    traffic=args.traffic, night=args.night,
                 )
                 if args.resume and (out_dir / f"{scenario}_run{i}.csv").exists():
                     continue

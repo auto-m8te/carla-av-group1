@@ -11,4 +11,5 @@ HUD_COLORS = {
     Mode.AVOID: (0, 120, 255),
     Mode.PASSING: (0, 120, 255),
     Mode.RETURN: (0, 220, 220),
+    Mode.YIELD: (60, 110, 255),
 }

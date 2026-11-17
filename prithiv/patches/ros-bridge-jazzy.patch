@@ -1,0 +1,63 @@
+diff --git a/carla_ros_bridge/src/carla_ros_bridge/CARLA_VERSION b/carla_ros_bridge/src/carla_ros_bridge/CARLA_VERSION
+index 62ea259..f806549 100644
+--- a/carla_ros_bridge/src/carla_ros_bridge/CARLA_VERSION
++++ b/carla_ros_bridge/src/carla_ros_bridge/CARLA_VERSION
+@@ -1 +1 @@
+-0.9.13
++0.9.16
+diff --git a/carla_ros_bridge/src/carla_ros_bridge/bridge.py b/carla_ros_bridge/src/carla_ros_bridge/bridge.py
+index 9e34f49..49f24fe 100755
+--- a/carla_ros_bridge/src/carla_ros_bridge/bridge.py
++++ b/carla_ros_bridge/src/carla_ros_bridge/bridge.py
+@@ -12,6 +12,7 @@ Class that handle communication between CARLA and ROS
+ """
+ 
+ import os
++import time
+ import pkg_resources
+ try:
+     import queue
+@@ -251,6 +252,9 @@ class CarlaRosBridge(CompatibleNode):
+         execution loop for synchronous mode
+         """
+         while not self.shutdown.is_set() and roscomp.ok():
++            # lanebot: run no faster than real time, so CARLA does not use the
++            # whole computer computing frames nobody needs.
++            tick_started = time.monotonic()
+             self.process_run_state()
+ 
+             if self.parameters['synchronous_mode_wait_for_vehicle_control_command']:
+@@ -273,6 +277,9 @@ class CarlaRosBridge(CompatibleNode):
+                 frame))
+             self._update(frame, world_snapshot.timestamp.elapsed_seconds)
+             self.logdebug("Waiting for sensor data finished.")
++            spare = self.parameters['fixed_delta_seconds'] - (time.monotonic() - tick_started)
++            if spare > 0:
++                time.sleep(spare)
+ 
+             if self.parameters['synchronous_mode_wait_for_vehicle_control_command']:
+                 # wait for all ego vehicles to send a vehicle control command
+@@ -435,7 +442,9 @@ def main(args=None):
+                     data = od_file.read()
+                 carla_world = carla_client.generate_opendrive_world(str(data))
+             else:
+-                if carla_world.get_map().name != parameters["town"]:
++                # lanebot: CARLA reports "Carla/Maps/Town04"; compare the last part only,
++                # so an already loaded map is not loaded again (reloading crashed CARLA).
++                if carla_world.get_map().name.split("/")[-1] != parameters["town"]:
+                     carla_bridge.loginfo("Loading town '{}' (previous: '{}').".format(
+                         parameters["town"], carla_world.get_map().name))
+                     carla_world = carla_client.load_world(parameters["town"])
+diff --git a/carla_ros_bridge/src/carla_ros_bridge/camera.py b/carla_ros_bridge/src/carla_ros_bridge/camera.py
+index c9404e2..5bb9823 100644
+--- a/carla_ros_bridge/src/carla_ros_bridge/camera.py
++++ b/carla_ros_bridge/src/carla_ros_bridge/camera.py
+@@ -452,7 +452,7 @@ class DVSCamera(Camera):
+                                                 ('x', numpy.uint16),
+                                                 ('y', numpy.uint16),
+                                                 ('t', numpy.int64),
+-                                                ('pol', numpy.bool)
++                                                ('pol', bool)
+                                             ]))
+         carla_image_data_array = numpy.zeros(
+             (carla_dvs_event_array.height, carla_dvs_event_array.width, 3),

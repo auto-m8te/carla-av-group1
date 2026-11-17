@@ -27,7 +27,8 @@ MIN_STOP_GAP_M = 2.0
 RETURNED_TOL_M = 0.5
 log = logging.getLogger(__name__)
 SCENARIO_ORDER = ("empty_lane", "obstacle_stop", "obstacle_avoid", "curve_lane", "curve_stop",
-                  "lead_vehicle", "lead_brake", "oncoming_overtake", "route", "route_obstacle")
+                  "lead_vehicle", "lead_brake", "oncoming_overtake", "route", "route_obstacle",
+                  "pedestrian_crossing", "emergency_vehicle")
 FILE_RE = re.compile(r"^(" + "|".join(SCENARIO_ORDER) + r")_run(\d+)\.csv$")
 
 
@@ -56,6 +57,10 @@ class RunMetrics:
     junctions_passed: Optional[int] = None
     time_s: Optional[float] = None
     mean_speed: Optional[float] = None
+    red_light_violations: Optional[int] = None
+    speeding_s: Optional[float] = None         # seconds > 3 km/h over the limit
+    off_road_s: Optional[float] = None         # seconds off a driving lane
+    near_misses: Optional[int] = None          # ticks with another road user < 1 m away
 
 
 def load_rows(path: Path) -> list[dict]:
@@ -72,7 +77,8 @@ def load_rows(path: Path) -> list[dict]:
         r["gt_obstacle_distance"] = float(gt) if gt else None
         gt_adj = r.get("gt_adjacent_lane_clear")
         r["gt_adjacent_lane_clear"] = r.get("adjacent_lane_clear") if not gt_adj else gt_adj
-        for key in ("obstacle_speed", "other_speed", "other_gap", "lane_conf", "route_progress", "route_remaining", "in_junction", "speed_limit"):
+        for key in ("obstacle_speed", "other_speed", "other_gap", "lane_conf", "route_progress", "route_remaining", "in_junction", "speed_limit", "red_light_violations",
+                    "speeding", "off_road", "near_miss"):
             value = r.get(key)
             r[key] = float(value) if value not in (None, "") else None
     return rows
@@ -122,6 +128,13 @@ def _successful(scenario: str, rows: list[dict], min_gap: Optional[float],
     if scenario == "route":
         outside = [abs(r["lateral_offset"]) for r in rows if not r.get("in_junction")]
         return float(rows[-1].get("route_remaining", math.inf)) <= 5 and max(outside,default=0) < 1.5
+    if scenario == "emergency_vehicle":
+        # made way at least once, and the ambulance ended up in front of us
+        gap = rows[-1].get("other_gap")
+        return any(r["mode"] == "YIELD" for r in rows) and gap is not None and gap > 0
+    if scenario == "pedestrian_crossing":
+        # drove on past the crossing point without touching the pedestrian
+        return rows[-1]["odometer"] >= 50.0 and (min_gap is None or min_gap >= MIN_STOP_GAP_M)
     if scenario in ("empty_lane", "curve_lane"):
         return lane_max < LANE_DEPARTURE_M
     if scenario == "lead_vehicle":
@@ -175,7 +188,10 @@ def compute_metrics(town: str, scenario: str, run: int, rows: list[dict]) -> Run
                               for a,b in zip(rows,rows[1:])) if scenario.startswith("route") else None),
         time_s=last["t"] if scenario.startswith("route") else None,
         mean_speed=mean(r["speed"] for r in rows) if scenario.startswith("route") else None,
+        red_light_violations=(int(last["red_light_violations"])
+                              if last.get("red_light_violations") is not None else None),
         waited_for_oncoming=scenario == "oncoming_overtake" and waited_for_oncoming(rows),
+        **rule_metrics(rows),
     )
 
 
@@ -239,20 +255,52 @@ def perception_table(metrics: list[RunMetrics]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def rule_metrics(rows: list[dict]) -> dict:
+    """Totals of the per-tick rule checks (absent in CSVs older than the monitor)."""
+    if rows[0].get("speeding") is None:
+        return {}
+    dt = rows[1]["t"] - rows[0]["t"] if len(rows) > 1 else 0.05
+    flags = {k: [bool(r.get(k)) for r in rows] for k in ("speeding", "off_road", "near_miss")}
+    near = sum(1 for a, b in zip([False] + flags["near_miss"], flags["near_miss"]) if b and not a)
+    return {"speeding_s": round(sum(flags["speeding"]) * dt, 2),
+            "off_road_s": round(sum(flags["off_road"]) * dt, 2), "near_misses": near}
+
+
+def rule_table(metrics: list[RunMetrics]) -> str:
+    """Traffic-rule check per scenario (adopted from Prithiv's monitor.py)."""
+    out = ("| Scenario | Runs checked | Speeding (s) | Off-road (s) | Near misses | Red lights crossed |\n"
+           "|---|---|---|---|---|---|\n")
+    for sc in SCENARIO_ORDER:
+        ms = [m for m in metrics if m.scenario == sc and m.speeding_s is not None]
+        if ms:
+            out += (f"| {sc} | {len(ms)} | {sum(m.speeding_s for m in ms):.1f} "
+                    f"| {sum(m.off_road_s for m in ms):.1f} | {sum(m.near_misses for m in ms)} "
+                    f"| {_violations(ms)} |\n")
+    return out
+
+
 def full_report(metrics: list[RunMetrics]) -> str:
     report = "### Overall\n\n" + summary_table(metrics) + "\n### Per town\n\n" + town_table(metrics)
     if any(m.lane_conf_mean is not None or m.perception_mae_m or m.perception_missed or m.perception_false or m.adjacent_disagree
            for m in metrics):
         report += "\n### Obstacle detection vs ground truth\n\n" + perception_table(metrics)
     if any(m.route_length_m is not None for m in metrics):
-        report += "\n### Navigation\n\n| Scenario | Route length (m) | Junctions passed | Time (s) | Mean speed (m/s) |\n|---|---|---|---|---|\n"
+        report += "\n### Navigation\n\n| Scenario | Route length (m) | Junctions passed | Time (s) | Mean speed (m/s) | Red-light violations |\n|---|---|---|---|---|---|\n"
         for sc in ("route", "route_obstacle"):
             ms = [m for m in metrics if m.scenario == sc]
             if ms:
                 report += (f"| {sc} | {_fmt([m.route_length_m for m in ms])} "
                            f"| {_fmt([m.junctions_passed for m in ms])} | {_fmt([m.time_s for m in ms])} "
-                           f"| {_fmt([m.mean_speed for m in ms])} |\n")
+                           f"| {_fmt([m.mean_speed for m in ms])} | {_violations(ms)} |\n")
+    if any(m.speeding_s is not None for m in metrics):
+        report += "\n### Traffic-rule check\n\n" + rule_table(metrics)
     return report
+
+
+def _violations(ms: list[RunMetrics]) -> str:
+    """Total red-light crossings, or '-' when lights were not checked."""
+    counts = [m.red_light_violations for m in ms if m.red_light_violations is not None]
+    return str(sum(counts)) if counts else "-"
 
 
 def plot_runs(runs: dict[str, list[dict]], out_dir: Path) -> list[Path]:
@@ -284,7 +332,7 @@ def plot_runs(runs: dict[str, list[dict]], out_dir: Path) -> list[Path]:
 
 
 MODE_COLORS = {"FOLLOW": "#ffe599", "BRAKE": "#f4b183", "STOPPED": "#e06666", "EMERGENCY_STOP": "#990000",
-               "ABORT": "#f6b26b", "AVOID": "#9fc5e8", "PASSING": "#6fa8dc", "RETURN": "#b6d7a8"}
+               "ABORT": "#f6b26b", "AVOID": "#9fc5e8", "PASSING": "#6fa8dc", "RETURN": "#b6d7a8", "YIELD": "#8e7cc3"}
 
 
 def _shade_modes(axes, rows: list[dict]) -> None:

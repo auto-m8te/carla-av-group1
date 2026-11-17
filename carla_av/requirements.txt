@@ -3,3 +3,4 @@ numpy
 matplotlib
 pytest
 opencv-python-headless
+pygame>=2.5   # instrument cluster (--cluster)

@@ -1,0 +1,14 @@
+# colcon build output
+build/
+install/
+log/
+# run logs
+logs/
+# downloaded by tools/setup_bridge.sh (our changes are in patches/)
+src/ros-bridge/
+# Python caches
+__pycache__/
+*.pyc
+# left over from the earlier Docker setup
+Dockerfile
+build.log
